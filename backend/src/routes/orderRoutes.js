@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { sql, poolPromise } = require('../../../api/db');
-const { mapOrderRow, normalizePaymentMethodCode } = require('../../../api/utils/mappers');
+const { mapOrderRow, normalizePaymentMethodCode } = require('../utils/mappers');
 
 async function attachItemsToOrders(pool, orderRows) {
   if (orderRows.length === 0) return [];

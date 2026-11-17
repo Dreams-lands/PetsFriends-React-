@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { sql, poolPromise } = require('../../../api/db');
-const { mapUserRow, mapAddressRow } = require('../../../api/utils/mappers');
+const { mapUserRow, mapAddressRow } = require('../utils/mappers');
 
 // 1. Đăng nhập (hỗ trợ Email, Username như admin/staff, hoặc SĐT)
 router.post('/auth/login', async (req, res) => {

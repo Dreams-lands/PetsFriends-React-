@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { sql, poolPromise } = require('../../../api/db');
-const { mapProductRow, mapReviewRow, parseMoneyNumber } = require('../../../api/utils/mappers');
+const { mapProductRow, mapReviewRow, parseMoneyNumber } = require('../utils/mappers');
 
 // 1. Lấy danh sách danh mục
 router.get('/categories', async (req, res) => {

@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { sql, poolPromise } = require('../../../api/db');
-const { formatCurrency, mapBookingRow } = require('../../../api/utils/mappers');
+const { formatCurrency, mapBookingRow } = require('../utils/mappers');
 
 // 1. Danh sách gói dịch vụ Spa
 router.get('/spa-packages', async (req, res) => {
