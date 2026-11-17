@@ -1,71 +1,586 @@
 openapi: 3.0.3
 info:
-  title: QLThuCung RESTful API
-  version: 1.0.0
-  description: >
-    Tài liệu đặc tả RESTful API làm cầu nối giữa Backend (Node.js + SQL Server)
-    và Frontend (React) cho dự án Quản lý Thú Cưng.
+  title: PetsFriend (QLThuCung) RESTful API
+  version: 2.0.0
+  description: He thong RESTful API ket noi SQL Server va React cho du an Cua hang & Spa Thu cung PetsFriend.
 
 servers:
   - url: http://localhost:5000/api
-    description: Backend Local Server
+    description: Local Backend Server
 
 tags:
   - name: System
-    description: Kiểm tra trạng thái hệ thống
-  - name: Pets
-    description: Quản lý thú cưng (mẫu tham khảo)
+    description: Kiem tra he thong
+  - name: Auth & Users
+    description: Dang nhap, dang ky, ho so va so dia chi
+  - name: Products & Reviews
+    description: Danh muc, san pham, ton kho va danh gia
+  - name: Orders & POS
+    description: Don hang online, ban tai quay POS va doanh thu
+  - name: Spa & Contact
+    description: Goi dich vu Spa, dat lich hen va tin nhan lien he
 
 paths:
   /health:
     get:
-      tags:
-        - System
-      summary: Kiểm tra kết nối API
+      tags: [System]
+      summary: Kiem tra ket noi SQL Server
       responses:
         "200":
-          description: API đang hoạt động bình thường
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
-                  message:
-                    type: string
-                    example: QLThuCung API is running
+          description: Thanh cong
 
-  /pets:
+  /auth/login:
+    post:
+      tags: [Auth & Users]
+      summary: Dang nhap (Email, Username hoac SDT)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                identifier:
+                  type: string
+                  example: admin@pethub.vn
+                password:
+                  type: string
+                  example: Admin@123
+      responses:
+        "200":
+          description: Dang nhap thanh cong
+
+  /auth/register:
+    post:
+      tags: [Auth & Users]
+      summary: Dang ky tai khoan hoi vien moi
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                fullName:
+                  type: string
+                  example: Nguyen Minh Anh
+                email:
+                  type: string
+                  example: minhanh@gmail.com
+                phone:
+                  type: string
+                  example: "0901234567"
+                password:
+                  type: string
+                  example: "123456"
+      responses:
+        "201":
+          description: Tao tai khoan thanh cong
+
+  /users:
     get:
-      tags:
-        - Pets
-      summary: Lấy danh sách thú cưng
+      tags: [Auth & Users]
+      summary: Lay danh sach tat ca nguoi dung
       responses:
         "200":
-          description: Thành công
-          content:
-            application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Pet"
+          description: Thanh cong
 
-components:
-  schemas:
-    Pet:
-      type: object
-      properties:
-        id:
-          type: integer
-          example: 1
-        name:
-          type: string
-          example: Milo
-        species:
-          type: string
-          example: Chó
-        age:
-          type: integer
-          example: 2
+  /users/lookup-phone:
+    get:
+      tags: [Auth & Users]
+      summary: Tra cuu nhanh hoi vien bang SDT tai quay POS
+      parameters:
+        - in: query
+          name: phone
+          required: true
+          schema:
+            type: string
+            example: "0909123456"
+      responses:
+        "200":
+          description: Tim thay hoi vien
+
+  /users/{id}/profile:
+    put:
+      tags: [Auth & Users]
+      summary: Cap nhat ho so ca nhan
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+      responses:
+        "200":
+          description: Cap nhat thanh cong
+
+  /users/{id}/password:
+    put:
+      tags: [Auth & Users]
+      summary: Doi mat khau tai khoan
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                currentPassword:
+                  type: string
+                newPassword:
+                  type: string
+      responses:
+        "200":
+          description: Doi mat khau thanh cong
+
+  /users/{userId}/addresses:
+    get:
+      tags: [Auth & Users]
+      summary: Lay so dia chi nhan hang cua nguoi dung
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Auth & Users]
+      summary: Them dia chi nhan hang moi
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                  example: Nha rieng
+                recipient:
+                  type: string
+                  example: Trinh Anh Khoa
+                phone:
+                  type: string
+                  example: "0909123456"
+                address:
+                  type: string
+                  example: 128 Nguyen Hue, Quan 1, TP.HCM
+                isDefault:
+                  type: boolean
+                  example: true
+      responses:
+        "201":
+          description: Da them dia chi
+
+  /categories:
+    get:
+      tags: [Products & Reviews]
+      summary: Lay danh sach danh muc san pham
+      responses:
+        "200":
+          description: Thanh cong
+
+  /products:
+    get:
+      tags: [Products & Reviews]
+      summary: Lay danh sach san pham (ho tro loc category, petType, promoOnly, search, sort)
+      parameters:
+        - in: query
+          name: category
+          schema:
+            type: string
+        - in: query
+          name: petType
+          schema:
+            type: string
+        - in: query
+          name: promoOnly
+          schema:
+            type: string
+        - in: query
+          name: search
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Products & Reviews]
+      summary: Them san pham moi vao kho (Admin)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name:
+                  type: string
+                brand:
+                  type: string
+                category:
+                  type: string
+                  example: food
+                subType:
+                  type: string
+                petType:
+                  type: string
+                  example: both
+                priceNum:
+                  type: number
+                  example: 250000
+                stockCount:
+                  type: integer
+                  example: 30
+                image:
+                  type: string
+                  example: /images/prod-ceramic-bowl.jpg
+      responses:
+        "201":
+          description: Da tao san pham
+
+  /products/{id}:
+    get:
+      tags: [Products & Reviews]
+      summary: Xem chi tiet 1 san pham va danh gia
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: prod-rc-mini
+      responses:
+        "200":
+          description: Thanh cong
+    put:
+      tags: [Products & Reviews]
+      summary: Cap nhat san pham (Admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Da cap nhat
+    delete:
+      tags: [Products & Reviews]
+      summary: Xoa san pham khoi cua hang (Admin)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Da xoa
+
+  /products/{id}/reviews:
+    post:
+      tags: [Products & Reviews]
+      summary: Gui danh gia cho san pham
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: prod-rc-mini
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                author:
+                  type: string
+                  example: Minh Thu
+                petTag:
+                  type: string
+                  example: Nuoi Poodle
+                rating:
+                  type: integer
+                  example: 5
+                comment:
+                  type: string
+                  example: Hat rat thom, be an ngon mieng.
+      responses:
+        "201":
+          description: Da luu danh gia
+
+  /orders:
+    get:
+      tags: [Orders & POS]
+      summary: Lay danh sach don hang kem san pham
+      parameters:
+        - in: query
+          name: userId
+          schema:
+            type: integer
+        - in: query
+          name: status
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Orders & POS]
+      summary: Tao don hang moi (Online hoac POS, tu dong tru ton kho)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                customerName:
+                  type: string
+                  example: Ho Minh Tuan
+                customerPhone:
+                  type: string
+                  example: "0907345112"
+                deliveryMethod:
+                  type: string
+                  example: delivery
+                shippingAddress:
+                  type: string
+                  example: 128 Nguyen Trai, Quan 1, TP.HCM
+                paymentMethod:
+                  type: string
+                  example: vnpay
+                orderSource:
+                  type: string
+                  example: online
+                items:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      productId:
+                        type: string
+                        example: prod-rc-mini
+                      name:
+                        type: string
+                        example: Hat dinh duong Mini Adult
+                      image:
+                        type: string
+                        example: /images/prod-chicken-pate.jpg
+                      price:
+                        type: number
+                        example: 389000
+                      quantity:
+                        type: integer
+                        example: 1
+      responses:
+        "201":
+          description: Dat hang thanh cong
+
+  /orders/lookup:
+    get:
+      tags: [Orders & POS]
+      summary: Tra cuu don hang khach vang lai theo SDT va Ma don
+      parameters:
+        - in: query
+          name: phone
+          required: true
+          schema:
+            type: string
+            example: "0907345112"
+        - in: query
+          name: orderCode
+          required: true
+          schema:
+            type: string
+            example: PH261116
+      responses:
+        "200":
+          description: Tim thay don hang
+
+  /orders/{id}/status:
+    patch:
+      tags: [Orders & POS]
+      summary: Cap nhat trang thai don hang (pending, shipping, completed, cancelled)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: PH261116
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: completed
+                staffName:
+                  type: string
+                  example: Linh Pham
+      responses:
+        "200":
+          description: Da cap nhat trang thai
+
+  /analytics/overview:
+    get:
+      tags: [Orders & POS]
+      summary: Thong ke doanh thu, don cho duyet va ton kho thap
+      responses:
+        "200":
+          description: Thanh cong
+
+  /spa-packages:
+    get:
+      tags: [Spa & Contact]
+      summary: Lay bang gia cac goi dich vu Spa
+      responses:
+        "200":
+          description: Thanh cong
+
+  /service-bookings:
+    get:
+      tags: [Spa & Contact]
+      summary: Lay danh sach lich hen Spa
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Spa & Contact]
+      summary: Dat lich hen Spa moi
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                packageId:
+                  type: string
+                  example: pkg-3
+                serviceName:
+                  type: string
+                  example: Cham soc Toan dien 7 Buoc
+                petName:
+                  type: string
+                  example: Milo (Corgi)
+                date:
+                  type: string
+                  example: "2026-11-18"
+                timeSlot:
+                  type: string
+                  example: 10:30 Sang
+                price:
+                  type: number
+                  example: 390000
+                customerName:
+                  type: string
+                  example: Trinh Khoa
+                customerPhone:
+                  type: string
+                  example: "0909686868"
+      responses:
+        "201":
+          description: Dat lich thanh cong
+
+  /service-bookings/{id}:
+    patch:
+      tags: [Spa & Contact]
+      summary: Cap nhat trang thai hoac phan cong nhan vien lich Spa
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: BK261116
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  example: completed
+                staffName:
+                  type: string
+                  example: Linh Pham
+      responses:
+        "200":
+          description: Da cap nhat
+
+  /contact-messages:
+    get:
+      tags: [Spa & Contact]
+      summary: Xem danh sach tin nhan lien he
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Spa & Contact]
+      summary: Khach gui yeu cau lien he moi
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                senderName:
+                  type: string
+                  example: Nguyen Minh Anh
+                senderPhone:
+                  type: string
+                  example: "0901234567"
+                topic:
+                  type: string
+                  example: Tu van san pham & dinh duong
+                message:
+                  type: string
+                  example: Nho shop tu van hat cho Poodle 2 tuoi.
+      responses:
+        "201":
+          description: Gui thanh cong

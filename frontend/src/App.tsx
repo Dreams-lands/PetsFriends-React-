@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback, lazy, Suspense } from 'react';
 import { motion, AnimatePresence, MotionConfig } from 'framer-motion';
 import {
   ChevronLeft,
@@ -42,7 +42,6 @@ import type {
   PageId,
   ProductCategory,
   ProductItem,
-  ProductReview,
   CartItem,
   AddressRecord,
   OrderRecord,
@@ -51,21 +50,17 @@ import type {
   PaymentMethodId,
   DeliveryMethodId,
   ServiceBookingRecord,
+  SpaPackage,
 } from './data/mockData';
 import {
   CATALOG_PRODUCTS,
   SPA_PACKAGES,
   STOREFRONT_SUPPLIES,
   INITIAL_ADDRESSES,
-  INITIAL_ORDERS,
-  INITIAL_BOOKINGS,
   ORDER_STATUS_META,
 } from './data/mockData';
 import {
-  ADMIN_EXTRA_BOOKINGS,
-  ADMIN_EXTRA_ORDERS,
   DEFAULT_SHARED_STAFF_PERMISSIONS,
-  DEFAULT_WORKSPACE_ACCOUNTS,
   INITIAL_PAYMENT_GATEWAYS,
   INITIAL_STORE_SETTINGS,
   STAFF_MEMBERS,
@@ -74,12 +69,19 @@ import {
   type StoreSettings,
   type WorkspaceUserRole,
 } from './data/adminData';
+import {
+  petsFriendApi,
+  getApiErrorMessage,
+  type AuthUserDto,
+} from './services/petsFriendApi';
+
 const AdminWorkspace = lazy(() =>
   import('./components/admin/AdminWorkspace').then((m) => ({ default: m.AdminWorkspace }))
 );
 const AccountPage = lazy(() =>
   import('./components/AccountPage').then((m) => ({ default: m.AccountPage }))
 );
+
 import {
   PRODUCT_CATEGORIES,
   PET_AUDIENCES,
@@ -115,6 +117,18 @@ interface OrderSnapshot {
   failReason?: string;
   isGuest?: boolean;
 }
+
+const AUTH_STORAGE_KEY = 'petsfriend_auth_user';
+
+const loadSavedAuthUser = (): AuthUserDto | null => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(AUTH_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as AuthUserDto) : null;
+  } catch {
+    return null;
+  }
+};
 
 const STORE_PICKUP_INFO = {
   name: 'PetsFriend Flagship — Chi nhánh Quận 1',
@@ -204,18 +218,23 @@ const HERO_BANNERS: Array<{
 
 const TODAY_ISO = new Date().toISOString().slice(0, 10);
 
-const getInitialPage = (): PageId => {
+const getInitialPage = (savedUser: AuthUserDto | null): PageId => {
   if (typeof window === 'undefined') return 'home';
   const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase();
   const query = new URLSearchParams(window.location.search).get('page')?.toLowerCase();
   if (hash === 'admin' || query === 'admin' || hash === 'staff' || query === 'staff') {
+    if (savedUser && (savedUser.role === 'admin' || savedUser.role === 'staff')) {
+      return 'admin';
+    }
     return 'login';
   }
   return 'home';
 };
 
 export function App() {
-  const [currentPage, setCurrentPage] = useState<PageId>(getInitialPage);
+  const initialSavedUser = useMemo(() => loadSavedAuthUser(), []);
+
+  const [currentPage, setCurrentPage] = useState<PageId>(() => getInitialPage(initialSavedUser));
   const [returnPage, setReturnPage] = useState<PageId>(() => {
     if (typeof window === 'undefined') return 'home';
     const hash = window.location.hash.replace(/^#\/?/, '').toLowerCase();
@@ -224,8 +243,9 @@ export function App() {
   const [heroSlide, setHeroSlide] = useState(0);
   const { theme, toggleWithDroplet } = useThemeDroplet();
 
-  // Admin & Shared Storefront State
+  // Dữ liệu đồng bộ trực tiếp từ SQL Server (QLThuCung)
   const [products, setProducts] = useState<ProductItem[]>(CATALOG_PRODUCTS);
+  const [spaPackages, setSpaPackages] = useState<SpaPackage[]>(SPA_PACKAGES);
   const [storeSettings, setStoreSettings] = useState<StoreSettings>(INITIAL_STORE_SETTINGS);
   const [paymentGateways, setPaymentGateways] = useState<PaymentGatewayConfig>(INITIAL_PAYMENT_GATEWAYS);
   const [sharedStaffRoster, setSharedStaffRoster] = useState<string[]>(STAFF_MEMBERS);
@@ -234,31 +254,23 @@ export function App() {
     DEFAULT_SHARED_STAFF_PERMISSIONS
   );
 
-  // Auth State
-  const [isLoggedIn, setIsLoggedIn] = useState(false);
-  const [authRole, setAuthRole] = useState<'guest' | 'customer' | WorkspaceUserRole>('guest');
-  const [userName, setUserName] = useState('Trịnh Anh Khoa');
-  const [userEmail, setUserEmail] = useState('khoa.trinh@pethub.vn');
-  const [userPhone, setUserPhone] = useState('0909 123 456');
+  // Auth & User State
+  const [currentUserId, setCurrentUserId] = useState<number | null>(
+    initialSavedUser?.userId ?? null
+  );
+  const [isLoggedIn, setIsLoggedIn] = useState<boolean>(Boolean(initialSavedUser));
+  const [authRole, setAuthRole] = useState<'guest' | 'customer' | WorkspaceUserRole>(
+    initialSavedUser?.role ?? 'guest'
+  );
+  const [userName, setUserName] = useState(initialSavedUser?.fullName ?? 'Trịnh Anh Khoa');
+  const [userEmail, setUserEmail] = useState(initialSavedUser?.email ?? 'khoa.trinh@pethub.vn');
+  const [userPhone, setUserPhone] = useState(initialSavedUser?.phone ?? '0909 123 456');
   const [userGender, setUserGender] = useState('Nam');
   const [accountTab, setAccountTab] = useState<AccountTab>('profile');
   const [addresses, setAddresses] = useState<AddressRecord[]>(INITIAL_ADDRESSES);
-  const [orders, setOrders] = useState<OrderRecord[]>(INITIAL_ORDERS);
-  const [lookupEntries, setLookupEntries] = useState<LookupOrderEntry[]>(() => [
-    ...INITIAL_ORDERS.map((o) => ({
-      ...o,
-      deliveryMethod: 'delivery' as DeliveryMethodId,
-      customerName: 'Trịnh Anh Khoa',
-      customerPhone: '0909 123 456',
-      customerEmail: 'khoa.trinh@pethub.vn',
-      staffName: 'Hà Lê',
-    })),
-    ...ADMIN_EXTRA_ORDERS,
-  ]);
-  const [bookings, setBookings] = useState<ServiceBookingRecord[]>(() => [
-    ...INITIAL_BOOKINGS,
-    ...ADMIN_EXTRA_BOOKINGS,
-  ]);
+  const [orders, setOrders] = useState<OrderRecord[]>([]);
+  const [lookupEntries, setLookupEntries] = useState<LookupOrderEntry[]>([]);
+  const [bookings, setBookings] = useState<ServiceBookingRecord[]>([]);
 
   // Catalog, Promotions & Search State
   const [searchQuery, setSearchQuery] = useState('');
@@ -277,7 +289,6 @@ export function App() {
   const [activeGalleryIdx, setActiveGalleryIdx] = useState(0);
   const [productQuantity, setProductQuantity] = useState(1);
   const [productSelectedSize, setProductSelectedSize] = useState(CATALOG_PRODUCTS[0].sizes[0]);
-  const [customReviews, setCustomReviews] = useState<Record<string, ProductReview[]>>({});
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewPetTag, setReviewPetTag] = useState('');
   const [reviewComment, setReviewComment] = useState('');
@@ -293,9 +304,9 @@ export function App() {
   );
   const [deliveryMethod, setDeliveryMethod] = useState<DeliveryMethodId>('delivery');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethodId>('vnpay');
-  const [checkoutName, setCheckoutName] = useState('');
-  const [checkoutPhone, setCheckoutPhone] = useState('');
-  const [checkoutEmail, setCheckoutEmail] = useState('');
+  const [checkoutName, setCheckoutName] = useState(initialSavedUser?.fullName ?? '');
+  const [checkoutPhone, setCheckoutPhone] = useState(initialSavedUser?.phone ?? '');
+  const [checkoutEmail, setCheckoutEmail] = useState(initialSavedUser?.email ?? '');
   const [checkoutAddress, setCheckoutAddress] = useState('');
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [paymentSecondsLeft, setPaymentSecondsLeft] = useState(PAYMENT_TIMEOUT_SECONDS);
@@ -313,15 +324,10 @@ export function App() {
   const [selectedPackageId, setSelectedPackageId] = useState('pkg-3');
   const [bookingDate, setBookingDate] = useState(TODAY_ISO);
   const [bookingTime, setBookingTime] = useState('10:30 Sáng');
-  const [ownerName, setOwnerName] = useState('Trịnh Khoa');
-  const [ownerPhone, setOwnerPhone] = useState('0909 686 868');
+  const [ownerName, setOwnerName] = useState(initialSavedUser?.fullName ?? '');
+  const [ownerPhone, setOwnerPhone] = useState(initialSavedUser?.phone ?? '');
   const [petNote, setPetNote] = useState('');
   const [bookingConfirmed, setBookingConfirmed] = useState(false);
-
-  const formatBookingDate = (val: string) => {
-    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(val);
-    return m ? `${m[3]}/${m[2]}/${m[1]}` : val;
-  };
 
   // Auth Form State
   const [showPass, setShowPass] = useState(false);
@@ -329,9 +335,9 @@ export function App() {
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
   const [loginError, setLoginError] = useState<string | null>(null);
-  const [regName, setRegName] = useState('Trịnh Khoa');
-  const [regPhone, setRegPhone] = useState('0909 686 868');
-  const [regEmail, setRegEmail] = useState('khoa.trinh@pethub.vn');
+  const [regName, setRegName] = useState('');
+  const [regPhone, setRegPhone] = useState('');
+  const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
   const [regError, setRegError] = useState<string | null>(null);
 
@@ -342,19 +348,79 @@ export function App() {
   const [contactMessage, setContactMessage] = useState('');
   const [contactSent, setContactSent] = useState(false);
 
-  const triggerToast = (msg: string) => {
+  const formatBookingDate = (val: string) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(val);
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : val;
+  };
+
+  const triggerToast = useCallback((msg: string) => {
     setToastMsg(msg);
     setTimeout(() => {
       setToastMsg((prev) => (prev === msg ? null : prev));
     }, 3200);
-  };
+  }, []);
+
+  // Tải toàn bộ dữ liệu thật từ SQL Server ngay khi mở ứng dụng
+  const syncBackendData = useCallback(async () => {
+    const [prodRes, pkgRes, ordRes, bkRes] = await Promise.allSettled([
+      petsFriendApi.getProducts(),
+      petsFriendApi.getSpaPackages(),
+      petsFriendApi.getOrders(),
+      petsFriendApi.getBookings(),
+    ]);
+
+    if (prodRes.status === 'fulfilled' && prodRes.value.length > 0) {
+      setProducts(prodRes.value);
+    }
+    if (pkgRes.status === 'fulfilled' && pkgRes.value.length > 0) {
+      setSpaPackages(pkgRes.value);
+    }
+    if (ordRes.status === 'fulfilled') {
+      setLookupEntries(ordRes.value);
+    }
+    if (bkRes.status === 'fulfilled') {
+      setBookings(bkRes.value);
+    }
+  }, []);
+
+  useEffect(() => {
+    void syncBackendData();
+  }, [syncBackendData]);
+
+  // Đồng bộ sổ địa chỉ và lịch sử đơn mua riêng khi người dùng đã đăng nhập
+  useEffect(() => {
+    if (!isLoggedIn || !currentUserId) return;
+    let active = true;
+
+    const loadMemberData = async () => {
+      const [addrRes, myOrdRes] = await Promise.allSettled([
+        petsFriendApi.getAddresses(currentUserId),
+        petsFriendApi.getOrders({ userId: currentUserId }),
+      ]);
+
+      if (!active) return;
+      if (addrRes.status === 'fulfilled') {
+        setAddresses(addrRes.value);
+        const def = addrRes.value.find((a) => a.isDefault) || addrRes.value[0];
+        if (def) setShippingAddress(def.address);
+      }
+      if (myOrdRes.status === 'fulfilled') {
+        setOrders(myOrdRes.value);
+      }
+    };
+
+    void loadMemberData();
+    return () => {
+      active = false;
+    };
+  }, [isLoggedIn, currentUserId]);
 
   const navigateTo = (page: PageId, overrideRole?: 'admin' | 'staff' | 'customer' | 'guest') => {
     const activeRole = overrideRole ?? authRole;
     if (page === 'admin' && activeRole !== 'admin' && activeRole !== 'staff') {
       setReturnPage('admin');
       setCurrentPage('login');
-      triggerToast('Vui lòng đăng nhập tài khoản để tiếp tục.');
+      triggerToast('Vui lòng đăng nhập tài khoản quản trị hoặc nhân viên để tiếp tục.');
       window.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
@@ -393,62 +459,106 @@ export function App() {
     };
     window.addEventListener('hashchange', syncHash);
     return () => window.removeEventListener('hashchange', syncHash);
-  }, [authRole]);
+  }, [authRole, triggerToast]);
 
-  // Admin Operations Synced Live to Storefront
-  const handleSaveAdminProduct = (item: ProductItem, isNew: boolean) => {
-    setProducts((prev) =>
-      isNew ? [item, ...prev] : prev.map((p) => (p.id === item.id ? item : p))
-    );
-    triggerToast(
-      isNew
-        ? `Đã thêm sản phẩm "${item.name}" vào kho và trang chủ.`
-        : `Đã cập nhật thông tin "${item.name}".`
-    );
+  // ==================== ADMIN OPERATIONS (SQL SERVER) ====================
+  const handleSaveAdminProduct = async (item: ProductItem, isNew: boolean) => {
+    try {
+      const saved = isNew
+        ? await petsFriendApi.createProduct(item)
+        : await petsFriendApi.updateProduct(item.id, item);
+
+      setProducts((prev) =>
+        isNew ? [saved, ...prev] : prev.map((p) => (p.id === saved.id ? saved : p))
+      );
+      triggerToast(
+        isNew
+          ? `Đã lưu sản phẩm "${saved.name}" vào SQL Server.`
+          : `Đã cập nhật sản phẩm "${saved.name}".`
+      );
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Lỗi khi lưu sản phẩm vào kho.'));
+    }
   };
 
-  const handleDeleteAdminProduct = (id: string) => {
-    setProducts((prev) => prev.filter((p) => p.id !== id));
-    triggerToast('Đã xóa sản phẩm khỏi danh mục cửa hàng.');
+  const handleDeleteAdminProduct = async (id: string) => {
+    try {
+      await petsFriendApi.deleteProduct(id);
+      setProducts((prev) => prev.filter((p) => p.id !== id));
+      triggerToast('Đã xóa sản phẩm khỏi danh mục cửa hàng.');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể xóa sản phẩm.'));
+    }
   };
 
-  const handleUpdateOrderStatus = (orderId: string, nextStatus: OrderStatus) => {
+  const handleUpdateOrderStatus = async (orderId: string, nextStatus: OrderStatus) => {
     const actorName = authRole === 'staff' ? activeShiftStaff : userName;
-    setLookupEntries((prev) =>
-      prev.map((o) =>
-        o.id === orderId ? { ...o, status: nextStatus, staffName: o.staffName || actorName } : o
-      )
-    );
-    setOrders((prev) =>
-      prev.map((o) => (o.id === orderId ? { ...o, status: nextStatus } : o))
-    );
-    triggerToast(`Đơn #${orderId} đã chuyển sang "${ORDER_STATUS_META[nextStatus].label}".`);
+    try {
+      const updated = await petsFriendApi.updateOrderStatus(orderId, nextStatus, actorName);
+      setLookupEntries((prev) => prev.map((o) => (o.id === orderId ? updated : o)));
+      setOrders((prev) => prev.map((o) => (o.id === orderId ? updated : o)));
+
+      if (nextStatus === 'cancelled') {
+        const refreshedProducts = await petsFriendApi.getProducts();
+        setProducts(refreshedProducts);
+      }
+      triggerToast(`Đơn #${orderId} đã chuyển sang "${ORDER_STATUS_META[nextStatus].label}".`);
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể cập nhật trạng thái đơn hàng.'));
+    }
   };
 
-  const handleAddAdminBooking = (booking: ServiceBookingRecord) => {
-    setBookings((prev) => [booking, ...prev]);
-    triggerToast(`Đã tạo lịch hẹn chăm sóc ${booking.id}.`);
+  const handleAddAdminBooking = async (booking: ServiceBookingRecord) => {
+    try {
+      const matchedPkg = spaPackages.find((p) => p.name === booking.serviceName);
+      const res = await petsFriendApi.createBooking({
+        id: booking.id,
+        packageId: matchedPkg?.id,
+        serviceName: booking.serviceName,
+        petName: booking.petName,
+        date: booking.date,
+        timeSlot: booking.timeSlot,
+        price: booking.price,
+        customerName: booking.customerName || 'Khách PetsFriend',
+        customerPhone: booking.customerPhone || '0900000000',
+        staffName: booking.staffName,
+        note: booking.note,
+      });
+      setBookings((prev) => [res.booking, ...prev]);
+      triggerToast(`Đã tạo lịch hẹn chăm sóc #${res.booking.id}.`);
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể tạo lịch hẹn mới.'));
+    }
   };
 
-  const handleUpdateBookingStatus = (
+  const handleUpdateBookingStatus = async (
     id: string,
     status: ServiceBookingRecord['status']
   ) => {
-    setBookings((prev) => prev.map((b) => (b.id === id ? { ...b, status } : b)));
-    triggerToast(`Đã cập nhật trạng thái lịch hẹn ${id}.`);
+    try {
+      const updated = await petsFriendApi.updateBooking(id, { status });
+      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      triggerToast(`Đã cập nhật trạng thái lịch hẹn #${id}.`);
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể cập nhật lịch hẹn.'));
+    }
   };
 
-  const handleAssignBookingStaff = (id: string, staffName: string) => {
-    setBookings((prev) =>
-      prev.map((b) => (b.id === id ? { ...b, staffName } : b))
-    );
-    triggerToast(`Đã phân công ${staffName} cho lịch hẹn ${id}.`);
+  const handleAssignBookingStaff = async (id: string, staffName: string) => {
+    try {
+      const updated = await petsFriendApi.updateBooking(id, { staffName });
+      setBookings((prev) => prev.map((b) => (b.id === id ? updated : b)));
+      triggerToast(`Đã phân công ${staffName} cho lịch hẹn #${id}.`);
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể phân công nhân viên.'));
+    }
   };
 
   const handleCreatePosOrder = (
     entry: LookupOrderEntry,
     soldItems: Array<{ id: string; quantity: number }>
   ) => {
+    // Cập nhật tức thời giao diện thu ngân & trừ tồn kho, đồng thời ghi xuống SQL Server
     setLookupEntries((prev) => [entry, ...prev]);
     setProducts((prev) =>
       prev.map((p) => {
@@ -456,8 +566,250 @@ export function App() {
         return sold ? { ...p, stockCount: Math.max(0, p.stockCount - sold.quantity) } : p;
       })
     );
+
+    void petsFriendApi
+      .createOrder({
+        id: entry.id,
+        userId: null,
+        isGuest: entry.isGuest ?? true,
+        customerName: entry.customerName,
+        customerPhone: entry.customerPhone,
+        deliveryMethod: 'pickup',
+        shippingAddress: entry.shippingAddress,
+        paymentMethod: entry.paymentMethod,
+        orderSource: 'pos',
+        status: 'completed',
+        totalAmount: entry.totalAmount,
+        staffName: entry.staffName,
+        items: entry.items.map((it) => ({
+          productId: it.id,
+          name: it.name,
+          image: it.image,
+          variant: it.variant,
+          price: it.price,
+          quantity: it.quantity,
+        })),
+      })
+      .then((res) => {
+        setLookupEntries((prev) =>
+          prev.map((o) => (o.id === entry.id ? res.order : o))
+        );
+      })
+      .catch((err) => {
+        triggerToast(getApiErrorMessage(err, 'Lỗi lưu hóa đơn POS xuống SQL Server.'));
+      });
   };
 
+  // ==================== AUTH & ACCOUNT OPERATIONS (SQL SERVER) ====================
+  const saveAuthSession = (user: AuthUserDto) => {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
+    }
+    setCurrentUserId(user.userId);
+    setIsLoggedIn(true);
+    setAuthRole(user.role);
+    setUserName(user.fullName);
+    setUserEmail(user.email);
+    setUserPhone(user.phone || '');
+    setOwnerName(user.fullName);
+    setOwnerPhone(user.phone || '');
+    setCheckoutName(user.fullName);
+    setCheckoutPhone(user.phone || '');
+    setCheckoutEmail(user.email);
+  };
+
+  const handleLoginSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const identifier = loginEmail.trim();
+    const pwd = loginPassword;
+    if (!identifier || !pwd) {
+      setLoginError('Vui lòng nhập đầy đủ tài khoản/email và mật khẩu.');
+      return;
+    }
+
+    try {
+      const res = await petsFriendApi.login(identifier, pwd);
+      setLoginError(null);
+      setLoginPassword('');
+      saveAuthSession(res.user);
+
+      if (res.addresses && res.addresses.length > 0) {
+        setAddresses(res.addresses);
+        const def = res.addresses.find((a) => a.isDefault) || res.addresses[0];
+        setShippingAddress(def.address);
+      }
+
+      await syncBackendData();
+
+      if (res.user.role === 'admin' || res.user.role === 'staff') {
+        triggerToast(
+          res.user.role === 'admin'
+            ? `Đăng nhập thành công (${res.user.fullName} · Quản trị viên).`
+            : `Đăng nhập thành công (${res.user.fullName} · Nhân viên cửa hàng).`
+        );
+        navigateTo('admin', res.user.role);
+        return;
+      }
+
+      triggerToast(`Đăng nhập thành công. Xin chào ${res.user.fullName}.`);
+      navigateTo(
+        returnPage === 'login' || returnPage === 'register' || returnPage === 'admin'
+          ? 'home'
+          : returnPage,
+        'customer'
+      );
+    } catch (err) {
+      setLoginError(
+        getApiErrorMessage(err, 'Tên đăng nhập / email hoặc mật khẩu không chính xác.')
+      );
+    }
+  };
+
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!regName.trim() || !regPhone.trim() || !regEmail.trim()) {
+      setRegError('Vui lòng nhập đầy đủ họ tên, số điện thoại và email.');
+      return;
+    }
+    if (regPassword.length < 6) {
+      setRegError('Mật khẩu phải có ít nhất 6 ký tự.');
+      return;
+    }
+
+    try {
+      const res = await petsFriendApi.register({
+        fullName: regName.trim(),
+        email: regEmail.trim(),
+        phone: regPhone.trim(),
+        password: regPassword,
+      });
+      setRegError(null);
+      setRegPassword('');
+      saveAuthSession(res.user);
+      setAddresses([]);
+      setOrders([]);
+      triggerToast(`Tạo tài khoản thành công. Chào mừng ${res.user.fullName}!`);
+      navigateTo(
+        returnPage === 'login' || returnPage === 'register' || returnPage === 'admin'
+          ? 'home'
+          : returnPage,
+        'customer'
+      );
+    } catch (err) {
+      setRegError(getApiErrorMessage(err, 'Không thể đăng ký tài khoản.'));
+    }
+  };
+
+  const handleLogout = () => {
+    setConfirmDialog({
+      title: 'Xác nhận đăng xuất',
+      message: 'Bạn có chắc chắn muốn đăng xuất khỏi tài khoản PetsFriend không?',
+      confirmLabel: 'Đăng xuất',
+      tone: 'danger',
+      onConfirm: () => {
+        if (typeof window !== 'undefined') {
+          window.localStorage.removeItem(AUTH_STORAGE_KEY);
+          if (window.location.hash === '#/admin' || window.location.hash === '#/staff') {
+            window.history.replaceState(null, '', window.location.pathname + window.location.search);
+          }
+        }
+        setCurrentUserId(null);
+        setIsLoggedIn(false);
+        setAuthRole('guest');
+        setLoginPassword('');
+        setLoginError(null);
+        setCartItems([]);
+        setOrders([]);
+        setCheckoutName('');
+        setCheckoutPhone('');
+        setCheckoutEmail('');
+        setCheckoutAddress('');
+        setDeliveryMethod('delivery');
+        setCheckoutError(null);
+        setBookingConfirmed(false);
+        setCurrentPage('home');
+        triggerToast('Đã đăng xuất khỏi tài khoản.');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      },
+    });
+  };
+
+  const handleUpdateUserProfile = async ({
+    name,
+    email,
+    phone,
+    gender,
+  }: {
+    name: string;
+    email: string;
+    phone: string;
+    gender: string;
+  }) => {
+    setUserGender(gender);
+    if (!currentUserId) return;
+    try {
+      const res = await petsFriendApi.updateProfile(currentUserId, { name, email, phone });
+      saveAuthSession(res.user);
+      triggerToast('Đã lưu thông tin hồ sơ vào SQL Server.');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể cập nhật hồ sơ.'));
+    }
+  };
+
+  const handleAddUserAddress = async (addr: Omit<AddressRecord, 'id'>) => {
+    if (!currentUserId) return;
+    try {
+      await petsFriendApi.addAddress(currentUserId, addr);
+      const updatedList = await petsFriendApi.getAddresses(currentUserId);
+      setAddresses(updatedList);
+      const def = updatedList.find((a) => a.isDefault) || updatedList[0];
+      if (def) setShippingAddress(def.address);
+      triggerToast('Đã thêm địa chỉ nhận hàng mới.');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể thêm địa chỉ.'));
+    }
+  };
+
+  const handleUpdateUserAddress = async (updated: AddressRecord) => {
+    if (!currentUserId) return;
+    try {
+      await petsFriendApi.updateAddress(currentUserId, updated);
+      const updatedList = await petsFriendApi.getAddresses(currentUserId);
+      setAddresses(updatedList);
+      const def = updatedList.find((a) => a.isDefault) || updatedList[0];
+      if (def) setShippingAddress(def.address);
+      triggerToast('Đã cập nhật địa chỉ giao hàng.');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể cập nhật địa chỉ.'));
+    }
+  };
+
+  const handleSetDefaultUserAddress = async (id: string) => {
+    if (!currentUserId) return;
+    try {
+      await petsFriendApi.setDefaultAddress(currentUserId, id);
+      const updatedList = await petsFriendApi.getAddresses(currentUserId);
+      setAddresses(updatedList);
+      const def = updatedList.find((a) => a.isDefault);
+      if (def) setShippingAddress(def.address);
+      triggerToast('Đã cập nhật địa chỉ nhận hàng mặc định.');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể đặt địa chỉ mặc định.'));
+    }
+  };
+
+  const handleDeleteUserAddress = async (id: string) => {
+    if (!currentUserId) return;
+    try {
+      await petsFriendApi.deleteAddress(currentUserId, id);
+      setAddresses((prev) => prev.filter((a) => a.id !== id));
+      triggerToast('Đã xóa địa chỉ nhận hàng.');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể xóa địa chỉ.'));
+    }
+  };
+
+  // ==================== STOREFRONT OPERATIONS (SQL SERVER) ====================
   const activePaymentOptions = useMemo(() => {
     const enabled = PAYMENT_OPTIONS.filter((opt) => {
       if (opt.id === 'vnpay') return paymentGateways.vnpayEnabled;
@@ -523,35 +875,6 @@ export function App() {
     navigateTo('product');
   };
 
-  const handleLogout = () => {
-    setConfirmDialog({
-      title: 'Xác nhận đăng xuất',
-      message: 'Bạn có chắc chắn muốn đăng xuất khỏi tài khoản PetsFriend không?',
-      confirmLabel: 'Đăng xuất',
-      tone: 'danger',
-      onConfirm: () => {
-        setIsLoggedIn(false);
-        setAuthRole('guest');
-        setLoginPassword('');
-        setLoginError(null);
-        setCartItems([]);
-        setCheckoutName('');
-        setCheckoutPhone('');
-        setCheckoutEmail('');
-        setCheckoutAddress('');
-        setDeliveryMethod('delivery');
-        setCheckoutError(null);
-        setBookingConfirmed(false);
-        if (typeof window !== 'undefined' && (window.location.hash === '#/admin' || window.location.hash === '#/staff')) {
-          window.history.replaceState(null, '', window.location.pathname + window.location.search);
-        }
-        setCurrentPage('home');
-        triggerToast('Đã đăng xuất khỏi tài khoản.');
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      },
-    });
-  };
-
   const toggleLike = (id: string) => {
     setLikedIds((prev) => {
       const next = !prev[id];
@@ -560,17 +883,14 @@ export function App() {
     });
   };
 
-  // Selected Product & Combined Reviews
   const selectedProduct = useMemo(() => {
     return products.find((p) => p.id === selectedProductId) || products[0] || CATALOG_PRODUCTS[0];
   }, [products, selectedProductId]);
 
   const productReviews = useMemo(() => {
-    const extra = customReviews[selectedProduct.id] || [];
-    return [...extra, ...selectedProduct.reviews];
-  }, [customReviews, selectedProduct]);
+    return selectedProduct.reviews || [];
+  }, [selectedProduct]);
 
-  // Cart Calculations
   const cartSubtotal = useMemo(() => {
     return cartItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
   }, [cartItems]);
@@ -689,7 +1009,7 @@ export function App() {
     setLookupOpen(true);
   };
 
-  const handleOrderLookupSubmit = (e: React.FormEvent) => {
+  const handleOrderLookupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanPhone = lookupPhone.replace(/\D/g, '');
     const cleanCode = lookupCode.trim().replace(/^#/, '').toUpperCase();
@@ -698,21 +1018,23 @@ export function App() {
       setLookupResult(null);
       return;
     }
-    const matched = lookupEntries.find(
-      (entry) =>
-        entry.customerPhone.replace(/\D/g, '') === cleanPhone &&
-        entry.id.replace(/^#/, '').toUpperCase() === cleanCode
-    );
-    if (!matched) {
-      setLookupError('Không tìm thấy đơn hàng khớp với Số điện thoại và Mã đơn hàng này.');
+
+    try {
+      const matched = await petsFriendApi.lookupGuestOrder(cleanPhone, cleanCode);
+      setLookupError(null);
+      setLookupResult(matched);
+    } catch (err) {
+      setLookupError(
+        getApiErrorMessage(
+          err,
+          'Không tìm thấy đơn hàng khớp với Số điện thoại và Mã đơn hàng này.'
+        )
+      );
       setLookupResult(null);
-      return;
     }
-    setLookupError(null);
-    setLookupResult(matched);
   };
 
-  const handleCheckout = () => {
+  const handleCheckout = async () => {
     const activeName = checkoutName.trim();
     const activePhone = checkoutPhone.trim();
     const activeEmail = checkoutEmail.trim();
@@ -757,53 +1079,164 @@ export function App() {
         : activeAddress;
     const customerLabel = activeName || (isLoggedIn ? userName : 'Quý khách');
 
-    const snapshot: OrderSnapshot = {
-      code: `#${orderNum}`,
-      date: nowLabel,
-      items: [...cartItems],
-      total: cartFinalTotal,
-      customerName: customerLabel,
-      customerPhone: activePhone,
-      customerEmail: activeEmail || (isLoggedIn ? userEmail : ''),
-      shippingAddress: resolvedAddress,
-      deliveryMethod,
-      paymentMethod: selectedPaymentLabel,
-      isGuest: !isLoggedIn,
-    };
-    setLastOrder(snapshot);
-
-    if (cartItems.length > 0) {
-      const mappedItems = cartItems.map((c) => ({
-        id: c.productId,
-        name: c.name,
-        image: c.image,
-        price: c.price,
-        quantity: c.quantity,
-        variant: c.desc,
-      }));
-      const newOrder: OrderRecord = {
+    try {
+      const res = await petsFriendApi.createOrder({
         id: orderNum,
-        createdAt: `${nowLabel} • Vừa đặt`,
-        status: 'pending',
-        totalAmount: cartFinalTotal,
+        userId: isLoggedIn ? currentUserId : null,
+        isGuest: !isLoggedIn,
+        customerName: customerLabel,
+        customerPhone: activePhone,
+        customerEmail: activeEmail || (isLoggedIn ? userEmail : undefined),
+        deliveryMethod,
         shippingAddress: resolvedAddress,
+        paymentMethod: effectivePaymentMethod,
+        orderSource: 'online',
+        totalAmount: cartFinalTotal,
+        items: cartItems.map((c) => ({
+          productId: c.productId,
+          name: c.name,
+          image: c.image,
+          variant: c.desc,
+          price: c.price,
+          quantity: c.quantity,
+        })),
+      });
+
+      const createdOrder = res.order;
+
+      setLastOrder({
+        code: `#${createdOrder.id}`,
+        date: nowLabel,
+        items: [...cartItems],
+        total: cartFinalTotal,
+        customerName: customerLabel,
+        customerPhone: activePhone,
+        customerEmail: activeEmail || (isLoggedIn ? userEmail : ''),
+        shippingAddress: resolvedAddress,
+        deliveryMethod,
         paymentMethod: selectedPaymentLabel,
-        items: mappedItems,
-      };
-      setOrders((prev) => [newOrder, ...prev]);
-      setLookupEntries((prev) => [
-        {
-          ...newOrder,
-          deliveryMethod,
-          customerName: customerLabel,
-          customerPhone: activePhone,
-          customerEmail: activeEmail || (isLoggedIn ? userEmail : ''),
-        },
-        ...prev,
-      ]);
+        isGuest: !isLoggedIn,
+      });
+
+      if (isLoggedIn) {
+        setOrders((prev) => [createdOrder, ...prev]);
+      }
+      setLookupEntries((prev) => [createdOrder, ...prev]);
+
+      // Cập nhật lại tồn kho mới nhất từ SQL Server
+      const refreshedProducts = await petsFriendApi.getProducts();
+      setProducts(refreshedProducts);
+
+      setCartItems([]);
+      navigateTo('checkout-success');
+    } catch (err) {
+      const msg = getApiErrorMessage(err, 'Không thể tạo đơn hàng lúc này.');
+      setCheckoutError(msg);
+      triggerToast(msg);
     }
-    setCartItems([]);
-    navigateTo('checkout-success');
+  };
+
+  const handleSubmitReview = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isLoggedIn) {
+      requireLoginFor('product', 'Vui lòng đăng nhập để gửi đánh giá sản phẩm.');
+      return;
+    }
+    if (!reviewComment.trim()) {
+      triggerToast('Vui lòng nhập nội dung nhận xét trước khi gửi.');
+      return;
+    }
+
+    try {
+      const createdRev = await petsFriendApi.addProductReview(selectedProduct.id, {
+        userId: currentUserId,
+        author: userName,
+        petTag: reviewPetTag.trim() || 'Thành viên PetsFriend',
+        rating: reviewRating,
+        comment: reviewComment.trim(),
+      });
+
+      setProducts((prev) =>
+        prev.map((p) => {
+          if (p.id !== selectedProduct.id) return p;
+          const nextReviews = [createdRev, ...(p.reviews || [])];
+          const avg = Number(
+            (
+              nextReviews.reduce((s, r) => s + r.rating, 0) / nextReviews.length
+            ).toFixed(1)
+          );
+          return {
+            ...p,
+            reviews: nextReviews,
+            reviewCount: nextReviews.length,
+            rating: avg,
+          };
+        })
+      );
+
+      setReviewComment('');
+      setReviewPetTag('');
+      setReviewRating(5);
+      triggerToast('Cảm ơn bạn đã chia sẻ đánh giá sản phẩm!');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể gửi đánh giá lúc này.'));
+    }
+  };
+
+  const selectedSpaPackage = useMemo(() => {
+    return spaPackages.find((p) => p.id === selectedPackageId) || spaPackages[0] || SPA_PACKAGES[0];
+  }, [spaPackages, selectedPackageId]);
+
+  const handleServiceBookingSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ownerPhone.trim()) {
+      triggerToast('Vui lòng nhập số điện thoại để PetsFriend liên hệ xác nhận lịch hẹn.');
+      return;
+    }
+
+    try {
+      const res = await petsFriendApi.createBooking({
+        userId: isLoggedIn ? currentUserId : null,
+        packageId: selectedSpaPackage.id,
+        serviceName: selectedSpaPackage.name,
+        petName: bookingPetType,
+        date: bookingDate,
+        timeSlot: bookingTime,
+        price: selectedSpaPackage.price,
+        customerName: ownerName.trim() || (isLoggedIn ? userName : 'Khách PetsFriend'),
+        customerPhone: ownerPhone.trim(),
+        note: petNote.trim() || undefined,
+      });
+
+      setBookings((prev) => [res.booking, ...prev]);
+      setBookingConfirmed(true);
+      triggerToast(
+        `Đã lưu lịch hẹn #${res.booking.id} (${selectedSpaPackage.name}) lúc ${bookingTime} (${formatBookingDate(bookingDate)}).`
+      );
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể đặt lịch hẹn lúc này.'));
+    }
+  };
+
+  const handleContactSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!contactName.trim() || !contactPhone.trim() || !contactMessage.trim()) {
+      triggerToast('Vui lòng điền đầy đủ họ tên, số điện thoại và nội dung.');
+      return;
+    }
+
+    try {
+      await petsFriendApi.sendContactMessage({
+        senderName: contactName.trim(),
+        senderPhone: contactPhone.trim(),
+        topic: contactTopic,
+        message: contactMessage.trim(),
+      });
+      setContactSent(true);
+      triggerToast('Đã gửi tin nhắn liên hệ tới hệ thống PetsFriend.');
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể gửi liên hệ lúc này.'));
+    }
   };
 
   // Catalog Filters & Sorting
@@ -812,7 +1245,7 @@ export function App() {
       const matchesCat =
         selectedCategoryFilter === 'all' || item.category === selectedCategoryFilter;
       const matchesPet =
-        petScope === 'all' || item.petType === petScope;
+        petScope === 'all' || item.petType === petScope || item.petType === 'both';
       const matchesSubType =
         selectedSubTypes.length === 0 || selectedSubTypes.includes(item.subType);
       const matchesPrice =
@@ -844,19 +1277,18 @@ export function App() {
     return filtered;
   }, [products, searchQuery, selectedCategoryFilter, petScope, selectedSubTypes, selectedPriceRanges, sortBy]);
 
-  // Featured Products: ONLY normal (non-discounted) items on Home
   const featuredProducts = useMemo(() => {
     const nonDiscounted = products.filter(
       (p) => !p.discountBadge && !p.originalPrice
     );
+    const pool = nonDiscounted.length > 0 ? nonDiscounted : products;
     if (homeCategoryTab === 'all') {
-      const highlighted = nonDiscounted.filter((p) => p.isFeatured);
-      return (highlighted.length >= 4 ? highlighted : nonDiscounted).slice(0, 4);
+      const highlighted = pool.filter((p) => p.isFeatured);
+      return (highlighted.length > 0 ? highlighted : pool).slice(0, 4);
     }
-    return nonDiscounted.filter((p) => p.category === homeCategoryTab).slice(0, 4);
+    return pool.filter((p) => p.category === homeCategoryTab).slice(0, 4);
   }, [products, homeCategoryTab]);
 
-  // Discounted Products: ALL items with % discount / originalPrice
   const allDiscountedProducts = useMemo(() => {
     return products.filter((p) => Boolean(p.discountBadge || p.originalPrice));
   }, [products]);
@@ -871,38 +1303,17 @@ export function App() {
     });
   }, [allDiscountedProducts, promoCatFilter]);
 
-  const selectedSpaPackage = useMemo(() => {
-    return SPA_PACKAGES.find((p) => p.id === selectedPackageId) || SPA_PACKAGES[0];
-  }, [selectedPackageId]);
-
-  const handleSubmitReview = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!isLoggedIn) {
-      requireLoginFor('product', 'Vui lòng đăng nhập để gửi đánh giá sản phẩm.');
-      return;
-    }
-    if (!reviewComment.trim()) {
-      triggerToast('Vui lòng nhập nội dung nhận xét trước khi gửi.');
-      return;
-    }
-    const newRev: ProductReview = {
-      id: `rev-user-${Date.now()}`,
-      author: userName,
-      petTag: reviewPetTag.trim() || 'Thành viên PetsFriend',
-      rating: reviewRating,
-      date: 'Hôm nay',
-      verified: true,
-      comment: reviewComment.trim(),
-    };
-    setCustomReviews((prev) => ({
-      ...prev,
-      [selectedProduct.id]: [newRev, ...(prev[selectedProduct.id] || [])],
-    }));
-    setReviewComment('');
-    setReviewPetTag('');
-    setReviewRating(5);
-    triggerToast('Cảm ơn bạn đã chia sẻ đánh giá sản phẩm.');
-  };
+  const customerBookings = useMemo(() => {
+    const cleanMyPhone = userPhone.replace(/\D/g, '');
+    return bookings.filter((b) => {
+      const bkWithUser = b as ServiceBookingRecord & { userId?: number | null };
+      if (currentUserId && bkWithUser.userId === currentUserId) return true;
+      if (cleanMyPhone && (b.customerPhone || '').replace(/\D/g, '') === cleanMyPhone) {
+        return true;
+      }
+      return false;
+    });
+  }, [bookings, currentUserId, userPhone]);
 
   const isCompactLayout =
     currentPage === 'login' ||
@@ -981,7 +1392,6 @@ export function App() {
         </Suspense>
       ) : (
         <>
-          {/* Header */}
           {isCompactLayout ? (
             <CompactHeader
               onNavigate={navigateTo}
@@ -1011,12 +1421,9 @@ export function App() {
             />
           )}
 
-          {/* Main Content */}
           <main id="main-content" tabIndex={-1} className="flex-1 relative focus:outline-none">
             <AnimatePresence mode="wait">
-          {/* ===================================================================
-           * 1. STOREFRONT HOMEPAGE (Minimalist Luxury Copy - Nói ít hiểu nhiều)
-           * =================================================================== */}
+          {/* 1. STOREFRONT HOMEPAGE */}
           {currentPage === 'home' && (
             <motion.div
               key="home"
@@ -1026,7 +1433,6 @@ export function App() {
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
               className="w-full pb-12"
             >
-              {/* Full-background Hero Banner Slider (3 Slides) */}
               {(() => {
                 const activeBanner = HERO_BANNERS[heroSlide];
                 return (
@@ -1048,7 +1454,6 @@ export function App() {
                     <div className="absolute inset-0 ph-hero-scrim" />
 
                     <div className="relative z-10 max-w-[1320px] mx-auto px-3 sm:px-8 lg:px-12 flex items-center min-h-[380px] sm:min-h-[440px] lg:min-h-[480px]">
-                      {/* Hero Content Column with internal Arrows & Dots */}
                       <div className="flex-1 min-w-0 relative flex flex-col justify-center min-h-[380px] sm:min-h-[440px] lg:min-h-[480px] pt-10 pb-16 sm:py-16 px-3 sm:px-14 lg:px-16">
                         <AnimatePresence mode="wait">
                           <motion.div
@@ -1086,7 +1491,6 @@ export function App() {
                           </motion.div>
                         </AnimatePresence>
 
-                        {/* Slide Arrows */}
                         <button
                           type="button"
                           aria-label="Banner trước"
@@ -1106,7 +1510,6 @@ export function App() {
                           <ChevronRight className="w-4 h-4" />
                         </button>
 
-                        {/* Slide Dots */}
                         <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2">
                           {HERO_BANNERS.map((b, idx) => (
                             <button
@@ -1128,7 +1531,6 @@ export function App() {
                 );
               })()}
 
-              {/* 4 Commitments Bar */}
               <section className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 pt-6 pb-2">
                 <div className="rounded-2xl bg-white border border-[#dfe6f0] px-6 py-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
                   {[
@@ -1175,7 +1577,6 @@ export function App() {
                 </div>
               </section>
 
-              {/* Brand Statement */}
               <section className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 py-10 border-b border-[#dfe6f0]">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
                   <div className="space-y-2 max-w-[58ch]">
@@ -1196,7 +1597,6 @@ export function App() {
                 </div>
               </section>
 
-              {/* Core Supplies Categories */}
               <section className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 py-12">
                 <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 mb-8">
                   <h2 className="text-[26px] lg:text-[30px] font-extrabold text-[#17324d] tracking-[-0.02em]">
@@ -1249,7 +1649,6 @@ export function App() {
                 </div>
               </section>
 
-              {/* Featured Products */}
               <section className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 py-12 border-t border-[#dfe6f0]">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-5 mb-8">
                   <div>
@@ -1359,7 +1758,6 @@ export function App() {
                 </div>
               </section>
 
-              {/* Limited Flash Sale — unboxed full-width subtle band so cards are NOT nested */}
               <section className="w-full bg-[#f8faff] border-y border-[#dfe6f0] py-12">
                 <div className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-6 border-b border-[#dfe6f0]">
@@ -1462,7 +1860,6 @@ export function App() {
                 </div>
               </section>
 
-              {/* Services Section */}
               <section className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 py-12">
                 <div className="max-w-[54ch] mb-9 space-y-2">
                   <h2 className="text-[28px] lg:text-[32px] font-extrabold text-[#17324d] tracking-[-0.02em]">
@@ -1541,9 +1938,7 @@ export function App() {
             </motion.div>
           )}
 
-          {/* ===================================================================
-           * 2. PRODUCT CATALOG & SEARCH PAGE (Viewable by All Visitors)
-           * =================================================================== */}
+          {/* 2. PRODUCT CATALOG & SEARCH PAGE */}
           {currentPage === 'search' && (
             <motion.div
               key="search"
@@ -1553,7 +1948,6 @@ export function App() {
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
               className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 pb-16"
             >
-              {/* Breadcrumb */}
               <div className="h-14 flex items-center gap-2.5 text-[13px] flex-wrap">
                 <button
                   onClick={() => navigateTo('home')}
@@ -1591,9 +1985,7 @@ export function App() {
                 )}
               </div>
 
-              {/* Two-Column Catalog Sidebar + Grid (No Brand Filter) */}
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-7 items-start">
-                {/* Mobile Filter Trigger */}
                 <div className="lg:hidden flex items-center justify-between gap-3 pb-3 border-b border-[#dfe6f0]">
                   <button
                     type="button"
@@ -1616,13 +2008,11 @@ export function App() {
                   </select>
                 </div>
 
-                {/* Left Filter Sidebar */}
                 <aside
                   className={`${
                     mobileFilterOpen ? 'block' : 'hidden'
                   } lg:block lg:col-span-3 space-y-5`}
                 >
-                  {/* DANH MỤC */}
                   <div className="rounded-2xl border border-[#dfe6f0] bg-white overflow-hidden">
                     <div className="px-4 py-3 bg-[#f6f8fb] border-b border-[#dfe6f0] border-l-4 border-l-[#0667d0]">
                       <h2 className="text-[13px] font-extrabold text-[#17324d] uppercase tracking-wider">
@@ -1695,7 +2085,6 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* BỘ LỌC (LOẠI SẢN PHẨM + GIÁ SẢN PHẨM, không có THƯƠNG HIỆU) */}
                   <div className="rounded-2xl border border-[#dfe6f0] bg-white overflow-hidden">
                     <div className="px-4 py-3 bg-[#f6f8fb] border-b border-[#dfe6f0] border-l-4 border-l-[#0667d0] flex items-center justify-between">
                       <h2 className="text-[13px] font-extrabold text-[#17324d] uppercase tracking-wider">
@@ -1717,7 +2106,6 @@ export function App() {
                     </div>
 
                     <div className="p-4 space-y-5">
-                      {/* LOẠI SẢN PHẨM */}
                       <div>
                         <h3 className="text-[12.5px] font-bold text-[#17324d] uppercase tracking-wide mb-3">
                           LOẠI SẢN PHẨM
@@ -1750,7 +2138,6 @@ export function App() {
                         </div>
                       </div>
 
-                      {/* GIÁ SẢN PHẨM */}
                       <div className="pt-4 border-t border-[#eef2f7]">
                         <h3 className="text-[12.5px] font-bold text-[#17324d] uppercase tracking-wide mb-3">
                           GIÁ SẢN PHẨM
@@ -1781,7 +2168,6 @@ export function App() {
                   </div>
                 </aside>
 
-                {/* Right Results Area */}
                 <div className="lg:col-span-9 space-y-6 min-w-0">
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-5 border-b border-[#dfe6f0]">
                     <div>
@@ -1817,7 +2203,6 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* Active Filter Chips */}
                   {(selectedSubTypes.length > 0 || selectedPriceRanges.length > 0 || petScope !== 'all') && (
                     <div className="flex flex-wrap items-center gap-2">
                       {petScope !== 'all' && (
@@ -1858,7 +2243,6 @@ export function App() {
                     </div>
                   )}
 
-                  {/* Product Grid */}
                   {filteredSearchList.length === 0 ? (
                     <div className="rounded-2xl border border-[#dfe6f0] bg-[#f8faff] p-12 text-center space-y-3">
                       <h2 className="text-lg font-bold text-[#17324d]">
@@ -1896,9 +2280,7 @@ export function App() {
             </motion.div>
           )}
 
-          {/* ===================================================================
-           * 2B. PROMOTIONS PAGE (TỔNG HỢP SẢN PHẨM ĐANG GIẢM GIÁ)
-           * =================================================================== */}
+          {/* 2B. PROMOTIONS PAGE */}
           {currentPage === 'promotions' && (
             <motion.div
               key="promotions"
@@ -1908,7 +2290,6 @@ export function App() {
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
               className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 py-8 pb-16 space-y-8"
             >
-              {/* Promo Header + Home-style Category Filter */}
               <div className="flex flex-col lg:flex-row lg:items-end justify-between gap-5 pb-6 border-b border-[#dfe6f0]">
                 <div className="space-y-2 max-w-2xl">
                   <button
@@ -1939,9 +2320,7 @@ export function App() {
                     <button
                       key={tab.id}
                       type="button"
-                      onClick={() =>
-                        setPromoCatFilter(tab.id as typeof promoCatFilter)
-                      }
+                      onClick={() => setPromoCatFilter(tab.id as typeof promoCatFilter)}
                       className={`px-4 py-2 rounded-lg text-[13px] font-bold transition cursor-pointer whitespace-nowrap ${
                         promoCatFilter === tab.id
                           ? 'bg-[#0667d0] text-white shadow-xs'
@@ -1961,9 +2340,7 @@ export function App() {
                   </p>
                   <button
                     type="button"
-                    onClick={() => {
-                      setPromoCatFilter('all');
-                    }}
+                    onClick={() => setPromoCatFilter('all')}
                     className="px-4 py-2 rounded-xl bg-[#0667d0] text-white text-xs font-bold cursor-pointer"
                   >
                     Xem tất cả ưu đãi
@@ -1988,9 +2365,7 @@ export function App() {
             </motion.div>
           )}
 
-          {/* ===================================================================
-           * 2C. CUSTOMER ACCOUNT MANAGEMENT PAGE (SHOPEE-ADAPTED)
-           * =================================================================== */}
+          {/* 2C. CUSTOMER ACCOUNT MANAGEMENT PAGE */}
           {currentPage === 'account' && (
             <motion.div
               key="account"
@@ -2009,63 +2384,15 @@ export function App() {
                 userGender={userGender}
                 activeTab={accountTab}
                 onTabChange={setAccountTab}
-                onUpdateProfile={({ name, email, phone, gender }) => {
-                  setUserName(name);
-                  setUserEmail(email);
-                  setUserPhone(phone);
-                  setUserGender(gender);
-                  setOwnerName(name);
-                  setOwnerPhone(phone);
-                  setCheckoutName(name);
-                  setCheckoutPhone(phone);
-                  setCheckoutEmail(email);
-                  triggerToast('Đã cập nhật thông tin tài khoản.');
-                }}
+                onUpdateProfile={handleUpdateUserProfile}
                 addresses={addresses}
-                onAddAddress={(addr) => {
-                  const newId = `addr-${Date.now()}`;
-                  setAddresses((prev) => {
-                    const base = addr.isDefault
-                      ? prev.map((a) => ({ ...a, isDefault: false }))
-                      : prev;
-                    return [...base, { ...addr, id: newId }];
-                  });
-                  if (addr.isDefault) {
-                    setShippingAddress(addr.address);
-                  }
-                  triggerToast('Đã thêm địa chỉ nhận hàng mới.');
-                }}
-                onUpdateAddress={(updated) => {
-                  setAddresses((prev) =>
-                    prev.map((a) => {
-                      if (a.id === updated.id) return updated;
-                      return updated.isDefault ? { ...a, isDefault: false } : a;
-                    })
-                  );
-                  if (updated.isDefault) {
-                    setShippingAddress(updated.address);
-                  }
-                  triggerToast('Đã cập nhật địa chỉ giao hàng.');
-                }}
-                onSetDefaultAddress={(id) => {
-                  setAddresses((prev) =>
-                    prev.map((a) => {
-                      const nextDefault = a.id === id;
-                      if (nextDefault) {
-                        setShippingAddress(a.address);
-                      }
-                      return { ...a, isDefault: nextDefault };
-                    })
-                  );
-                  triggerToast('Đã cập nhật địa chỉ nhận hàng mặc định.');
-                }}
-                onDeleteAddress={(id) => {
-                  setAddresses((prev) => prev.filter((a) => a.id !== id));
-                  triggerToast('Đã xóa địa chỉ nhận hàng.');
-                }}
+                onAddAddress={handleAddUserAddress}
+                onUpdateAddress={handleUpdateUserAddress}
+                onSetDefaultAddress={handleSetDefaultUserAddress}
+                onDeleteAddress={handleDeleteUserAddress}
                 onRequestConfirm={(dialog) => setConfirmDialog(dialog)}
                 orders={orders}
-                bookings={bookings.filter((b) => !b.id.startsWith('BK-2026-'))}
+                bookings={customerBookings}
                 likedProducts={products.filter((p) => likedIds[p.id])}
                 onToggleLike={toggleLike}
                 onAddToCart={(prod, qty) => addProductToCart(prod, qty)}
@@ -2087,11 +2414,9 @@ export function App() {
               />
               </Suspense>
             </motion.div>
-          )}
-
-          {/* ===================================================================
-           * 3. PRODUCT DETAIL & CUSTOMER REVIEWS PAGE
-           * =================================================================== */}
+          )}{
+            
+          }
           {currentPage === 'product' && (
             <motion.div
               key="product"
@@ -2101,7 +2426,6 @@ export function App() {
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
               className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 pb-16"
             >
-              {/* Breadcrumb */}
               <div className="h-14 flex items-center gap-2.5 text-[13px] flex-wrap">
                 <button
                   onClick={() => navigateTo('home')}
@@ -2213,7 +2537,6 @@ export function App() {
                     </p>
                   </div>
 
-                  {/* Highlights */}
                   <ul className="space-y-2 text-[13px] text-[#17324d]">
                     {selectedProduct.highlights.map((hl, i) => (
                       <li key={i} className="flex items-start gap-2">
@@ -2223,7 +2546,6 @@ export function App() {
                     ))}
                   </ul>
 
-                  {/* Size / Variant Selector */}
                   <div className="space-y-2">
                     <label className="text-[13px] font-bold text-[#17324d] block">
                       Quy cách đóng gói
@@ -2245,7 +2567,6 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* Purchase Actions */}
                   <div className="space-y-3 pt-2">
                     <div className="flex items-center gap-3">
                       <div className="py-1.5 rounded-xl border border-[#dfe6f0] flex items-center px-2 bg-white">
@@ -2300,12 +2621,11 @@ export function App() {
                 </div>
               </div>
 
-              {/* Customer Reviews Section — Openly Readable by Guests */}
+              {/* Customer Reviews Section */}
               <section
                 id="product-reviews"
                 className="mt-14 pt-12 border-t border-[#dfe6f0] grid grid-cols-1 lg:grid-cols-12 gap-10"
               >
-                {/* Left Rating Summary + Write Review */}
                 <div className="lg:col-span-4 space-y-6">
                   <div className="rounded-2xl bg-[#f8faff] border border-[#dfe6f0] p-6 space-y-4">
                     <h2 className="text-[20px] font-extrabold text-[#17324d]">
@@ -2347,7 +2667,6 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* Write Review Form (Auth Gated) */}
                   {isLoggedIn ? (
                     <form
                       onSubmit={handleSubmitReview}
@@ -2417,47 +2736,52 @@ export function App() {
                   )}
                 </div>
 
-                {/* Right Review Cards */}
                 <div className="lg:col-span-8 space-y-4">
-                  {productReviews.map((rev) => (
-                    <div
-                      key={rev.id}
-                      className="rounded-2xl bg-white border border-[#dfe6f0] p-6 space-y-3"
-                    >
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-bold text-[#17324d]">{rev.author}</span>
-                            {rev.verified && (
-                              <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full">
-                                <Check className="w-3 h-3" />
-                                <span>Đã mua hàng</span>
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[13px] text-[#52657a] mt-0.5">{rev.petTag}</div>
-                        </div>
-
-                        <div className="text-right">
-                          <div className="flex items-center gap-0.5 text-[#ffb547] justify-end">
-                            {Array.from({ length: rev.rating }).map((_, i) => (
-                              <Star key={i} className="w-3.5 h-3.5 fill-[#ffb547]" />
-                            ))}
-                          </div>
-                          <div className="text-[12px] text-[#52657a] mt-1">{rev.date}</div>
-                        </div>
-                      </div>
-
-                      <p className="text-[14px] text-[#17324d] leading-relaxed">{rev.comment}</p>
+                  {productReviews.length === 0 ? (
+                    <div className="rounded-2xl bg-white border border-[#dfe6f0] p-8 text-center text-[13px] text-[#52657a]">
+                      Chưa có nhận xét nào cho sản phẩm này. Hãy là người đầu tiên đánh giá!
                     </div>
-                  ))}
+                  ) : (
+                    productReviews.map((rev) => (
+                      <div
+                        key={rev.id}
+                        className="rounded-2xl bg-white border border-[#dfe6f0] p-6 space-y-3"
+                      >
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-sm font-bold text-[#17324d]">{rev.author}</span>
+                              {rev.verified && (
+                                <span className="inline-flex items-center gap-1 text-[12px] font-semibold text-emerald-800 bg-emerald-50 px-2.5 py-0.5 rounded-full">
+                                  <Check className="w-3 h-3" />
+                                  <span>Đã mua hàng</span>
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[13px] text-[#52657a] mt-0.5">{rev.petTag}</div>
+                          </div>
+
+                          <div className="text-right">
+                            <div className="flex items-center gap-0.5 text-[#ffb547] justify-end">
+                              {Array.from({ length: rev.rating }).map((_, i) => (
+                                <Star key={i} className="w-3.5 h-3.5 fill-[#ffb547]" />
+                              ))}
+                            </div>
+                            <div className="text-[12px] text-[#52657a] mt-1">{rev.date}</div>
+                          </div>
+                        </div>
+
+                        <p className="text-[14px] text-[#17324d] leading-relaxed">{rev.comment}</p>
+                      </div>
+                    ))
+                  )}
                 </div>
               </section>
             </motion.div>
           )}
 
           {/* ===================================================================
-           * 4. CART & CHECKOUT PAGE (Guest & Member Checkout)
+           * 4. CART & CHECKOUT PAGE (Guest & Member Checkout -> SQL Server)
            * =================================================================== */}
           {currentPage === 'cart' && (
             <motion.div
@@ -2500,7 +2824,6 @@ export function App() {
                 </div>
               ) : (
                 <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                  {/* Left Column */}
                   <div className="lg:col-span-8 bg-white rounded-2xl border border-[#dfe6f0] p-6 space-y-5">
                     <div className="flex items-center justify-between pb-4 border-b border-[#dfe6f0]">
                       <h2 className="text-lg font-bold text-[#17324d]">
@@ -2594,7 +2917,6 @@ export function App() {
                       )}
                     </div>
 
-                    {/* Payment Session Countdown Timer (45s) */}
                     <div
                       className={`rounded-xl px-3.5 py-2.5 border flex items-center justify-between gap-3 transition-colors ${
                         paymentSecondsLeft <= 15
@@ -2611,7 +2933,6 @@ export function App() {
                       </span>
                     </div>
 
-                    {/* Contact Info (Guest form requires Name, Phone, Gmail; Logged-in pre-fills) */}
                     <div className="space-y-3">
                       <div className="flex items-center justify-between gap-2">
                         <div className="text-[13px] font-bold text-[#17324d]">
@@ -2673,7 +2994,6 @@ export function App() {
                       </div>
                     </div>
 
-                    {/* Delivery Method Selector */}
                     <div className="space-y-2.5 pt-2 border-t border-[#dfe6f0]">
                       <div className="text-[13px] font-bold text-[#17324d]">
                         Hình thức nhận hàng
@@ -2750,7 +3070,6 @@ export function App() {
                       )}
                     </div>
 
-                    {/* Payment Method Options */}
                     <div className="space-y-2.5 pt-2 border-t border-[#dfe6f0]">
                       <div className="text-[13px] font-bold text-[#17324d]">
                         Phương thức thanh toán
@@ -2850,7 +3169,7 @@ export function App() {
           )}
 
           {/* ===================================================================
-           * 5. SERVICE BOOKING PAGE (Guest & Member Booking)
+           * 5. SERVICE BOOKING PAGE (Synced with SQL Server SpaPackages & Bookings)
            * =================================================================== */}
           {currentPage === 'service' && (
             <motion.div
@@ -2861,7 +3180,6 @@ export function App() {
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
               className="max-w-[1320px] mx-auto px-5 sm:px-8 lg:px-12 pb-16"
             >
-              {/* Breadcrumb */}
               <div className="h-14 flex items-center gap-2.5 text-[13px]">
                 <button
                   onClick={() => navigateTo('home')}
@@ -2873,7 +3191,6 @@ export function App() {
                 <span className="font-semibold text-[#0667d0]">Dịch vụ chăm sóc &amp; Khách sạn 5 sao</span>
               </div>
 
-              {/* Hero Banner */}
               <div className="rounded-2xl bg-[#eff5ff] border border-[#dfe6f0] p-8 lg:p-10 mb-8 space-y-2">
                 <h1 className="text-[28px] lg:text-[34px] font-extrabold text-[#17324d] tracking-[-0.02em]">
                   Dịch vụ chăm sóc &amp; Khách sạn thú cưng chuẩn y khoa
@@ -2884,16 +3201,14 @@ export function App() {
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                {/* Left Column: Packages + Booking Form (Gated for guests) */}
                 <div className="lg:col-span-7 space-y-6">
-                  {/* Packages Catalog — flat container wrapper removed so cards aren't nested */}
                   <div className="space-y-3.5">
                     <h2 className="text-[18px] font-bold text-[#17324d]">
                       Bảng giá gói dịch vụ
                     </h2>
 
                     <div className="space-y-3">
-                      {SPA_PACKAGES.map((pkg) => {
+                      {spaPackages.map((pkg) => {
                         const active = selectedPackageId === pkg.id;
                         return (
                           <div
@@ -2929,30 +3244,8 @@ export function App() {
                     </div>
                   </div>
 
-                  {/* Booking Form */}
                   <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      if (!ownerPhone.trim()) {
-                        triggerToast('Vui lòng nhập số điện thoại để PetsFriend liên hệ xác nhận lịch hẹn.');
-                        return;
-                      }
-                      const newBooking: ServiceBookingRecord = {
-                        id: `BK${Math.floor(100000 + Math.random() * 899999)}`,
-                        serviceName: selectedSpaPackage.name,
-                        petName: bookingPetType,
-                        date: bookingDate,
-                        timeSlot: bookingTime,
-                        price: selectedSpaPackage.price,
-                        status: 'upcoming',
-                        note: petNote.trim() || undefined,
-                      };
-                      setBookings((prev) => [newBooking, ...prev]);
-                      setBookingConfirmed(true);
-                      triggerToast(
-                        `Đã xác nhận lịch hẹn "${selectedSpaPackage.name}" lúc ${bookingTime} (${formatBookingDate(bookingDate)}).`
-                      );
-                    }}
+                    onSubmit={handleServiceBookingSubmit}
                     className="bg-white rounded-2xl border border-[#dfe6f0] p-6 lg:p-8 space-y-6"
                   >
                     <h2 className="text-base font-bold text-[#17324d]">
@@ -3038,7 +3331,7 @@ export function App() {
                         />
                       </div>
                       <div className="space-y-1.5">
-                        <label className="text-[13px] font-semibold text-[#52657a]">Số điện thoại</label>
+                        <label className="text-[13px] font-semibold text-[#52657a]">Số điện thoại *</label>
                         <input
                           type="text"
                           value={ownerPhone}
@@ -3067,7 +3360,7 @@ export function App() {
                         <div className="flex items-center gap-2.5">
                           <CheckCircle2 className="w-4 h-4 shrink-0" />
                           <span>
-                            Đã ghi nhận lịch hẹn <strong>{selectedSpaPackage.name}</strong> ({bookingPetType}) lúc{' '}
+                            Đã lưu lịch hẹn <strong>{selectedSpaPackage.name}</strong> ({bookingPetType}) lúc{' '}
                             <strong>{bookingTime}</strong> ngày <strong>{formatBookingDate(bookingDate)}</strong>.
                           </span>
                         </div>
@@ -3091,7 +3384,6 @@ export function App() {
                   </form>
                 </div>
 
-                {/* Right Standards Column */}
                 <div className="lg:col-span-5 space-y-6">
                   <div className="bg-white rounded-2xl border border-[#dfe6f0] p-6 space-y-4">
                     <h2 className="text-base font-bold text-[#0667d0] flex items-center gap-2">
@@ -3132,7 +3424,7 @@ export function App() {
           )}
 
           {/* ===================================================================
-           * 5B. CONTACT PAGE
+           * 5B. CONTACT PAGE (Synced with SQL Server ContactMessages)
            * =================================================================== */}
           {currentPage === 'contact' && (
             <motion.div
@@ -3164,7 +3456,6 @@ export function App() {
               </div>
 
               <div className="pt-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                {/* Left Info Column */}
                 <div className="lg:col-span-5 bg-white rounded-2xl border border-[#dfe6f0] p-6 sm:p-7 space-y-5">
                   <h2 className="text-lg font-extrabold text-[#17324d]">
                     Hệ thống cửa hàng &amp; Tổng đài
@@ -3225,7 +3516,6 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Right Contact Form Column */}
                 <div className="lg:col-span-7 bg-white rounded-2xl border border-[#dfe6f0] p-6 sm:p-8">
                   {contactSent ? (
                     <div className="py-8 text-center space-y-4 max-w-md mx-auto">
@@ -3260,18 +3550,7 @@ export function App() {
                       </div>
                     </div>
                   ) : (
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        if (!contactName.trim() || !contactPhone.trim() || !contactMessage.trim()) {
-                          triggerToast('Vui lòng điền đầy đủ họ tên, số điện thoại và nội dung.');
-                          return;
-                        }
-                        setContactSent(true);
-                        triggerToast('Đã gửi tin nhắn liên hệ tới PetsFriend.');
-                      }}
-                      className="space-y-5"
-                    >
+                    <form onSubmit={handleContactSubmit} className="space-y-5">
                       <div>
                         <h2 className="text-lg font-extrabold text-[#17324d]">
                           Gửi lời nhắn cho PetsFriend
@@ -3355,7 +3634,7 @@ export function App() {
           )}
 
           {/* ===================================================================
-           * 6. LOGIN & REGISTER PAGES
+           * 6. LOGIN & REGISTER PAGES (Synced with SQL Server Users)
            * =================================================================== */}
           {(currentPage === 'login' || currentPage === 'register') && (
             <motion.div
@@ -3366,7 +3645,6 @@ export function App() {
               transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
               className="w-full bg-[#f8faff] py-10 lg:py-14 px-5 flex flex-col items-center justify-center gap-6 min-h-[640px]"
             >
-              {/* Primary Auth Card (Always First) */}
               <div className="w-full max-w-[520px] rounded-3xl bg-white border border-[#dfe6f0] shadow-[0_16px_40px_rgba(23,50,77,0.07)] p-7 sm:p-10">
                 <div className="w-full rounded-xl bg-[#f3f7ff] p-1 grid grid-cols-2 gap-1 mb-6">
                   <button
@@ -3394,70 +3672,13 @@ export function App() {
                 </div>
 
                 {currentPage === 'login' ? (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      const identifier = loginEmail.trim().toLowerCase();
-                      const pwd = loginPassword;
-                      if (!identifier || !pwd) {
-                        setLoginError('Vui lòng nhập đầy đủ tài khoản/email và mật khẩu.');
-                        return;
-                      }
-
-                      const matchedWorkspace = DEFAULT_WORKSPACE_ACCOUNTS.find(
-                        (acc) => acc.email.toLowerCase() === identifier || acc.username.toLowerCase() === identifier
-                      );
-
-                      if (matchedWorkspace) {
-                        if (pwd !== matchedWorkspace.password) {
-                          setLoginError(
-                            'Tên đăng nhập / email hoặc mật khẩu không chính xác. Vui lòng thử lại.'
-                          );
-                          return;
-                        }
-                        setLoginError(null);
-                        setIsLoggedIn(true);
-                        setAuthRole(matchedWorkspace.role);
-                        setUserName(matchedWorkspace.displayName);
-                        setUserEmail(matchedWorkspace.email);
-                        triggerToast(
-                          matchedWorkspace.role === 'admin'
-                            ? `Đăng nhập thành công (${matchedWorkspace.displayName} · Quản trị viên).`
-                            : `Đăng nhập thành công (${matchedWorkspace.displayName} · Nhân viên giới hạn quyền).`
-                        );
-                        navigateTo('admin', matchedWorkspace.role);
-                        return;
-                      }
-
-                      const nameFromEmail = loginEmail.includes('@')
-                        ? ownerName
-                        : loginEmail.trim() || 'Trịnh Anh Khoa';
-                      setLoginError(null);
-                      setUserName(nameFromEmail);
-                      if (loginEmail.includes('@')) {
-                        setUserEmail(loginEmail.trim());
-                      }
-                      setCheckoutName(nameFromEmail);
-                      setCheckoutPhone(userPhone);
-                      setCheckoutEmail(loginEmail.includes('@') ? loginEmail.trim() : userEmail);
-                      setIsLoggedIn(true);
-                      setAuthRole('customer');
-                      triggerToast(`Đăng nhập thành công. Xin chào ${nameFromEmail}.`);
-                      navigateTo(
-                        returnPage === 'login' || returnPage === 'register' || returnPage === 'admin'
-                          ? 'home'
-                          : returnPage,
-                        'customer'
-                      );
-                    }}
-                    className="space-y-4"
-                  >
+                  <form onSubmit={handleLoginSubmit} className="space-y-4">
                     <div>
                       <h1 className="text-[22px] font-extrabold text-[#17324d]">
                         Đăng nhập tài khoản
                       </h1>
                       <p className="text-[14px] text-[#52657a] mt-1">
-                        Nhập email hoặc số điện thoại hội viên để tiếp tục.
+                        Nhập email, tên đăng nhập hoặc số điện thoại hội viên để tiếp tục.
                       </p>
                     </div>
 
@@ -3469,7 +3690,7 @@ export function App() {
 
                     <div className="space-y-1.5">
                       <label className="text-[12px] font-bold text-[#17324d] block">
-                        Email hoặc Số điện thoại
+                        Email / Tài khoản / Số điện thoại
                       </label>
                       <div className="h-11 rounded-xl bg-[#f8faff] border border-[#dfe6f0] focus-within:border-[#0667d0] px-3.5 flex items-center gap-3">
                         <Mail className="w-4 h-4 text-[#0667d0]" />
@@ -3480,7 +3701,7 @@ export function App() {
                             setLoginEmail(e.target.value);
                             setLoginError(null);
                           }}
-                          placeholder="example@email.com"
+                          placeholder="VD: khoa.trinh@pethub.vn hoặc admin"
                           className="flex-1 bg-transparent text-[13px] font-medium text-[#17324d] focus:outline-none"
                         />
                       </div>
@@ -3492,7 +3713,7 @@ export function App() {
                         <button
                           type="button"
                           onClick={() =>
-                            triggerToast('Đã gửi hướng dẫn đặt lại mật khẩu tới email của bạn.')
+                            triggerToast('Vui lòng liên hệ Hotline 1900 6868 để được cấp lại mật khẩu.')
                           }
                           className="py-1 font-semibold text-[#0667d0] hover:underline cursor-pointer"
                         >
@@ -3533,40 +3754,7 @@ export function App() {
                     </button>
                   </form>
                 ) : (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      if (!regName.trim() || !regPhone.trim() || !regEmail.trim()) {
-                        setRegError('Vui lòng nhập đầy đủ họ tên, số điện thoại và email.');
-                        return;
-                      }
-                      if (regPassword.length < 6) {
-                        setRegError('Mật khẩu phải có ít nhất 6 ký tự.');
-                        return;
-                      }
-                      setRegError('');
-                      const chosenName = regName.trim();
-                      setUserName(chosenName);
-                      setUserEmail(regEmail.trim());
-                      setUserPhone(regPhone.trim());
-                      setOwnerName(chosenName);
-                      setOwnerPhone(regPhone.trim());
-                      setCheckoutName(chosenName);
-                      setCheckoutPhone(regPhone.trim());
-                      setCheckoutEmail(regEmail.trim());
-                      setIsLoggedIn(true);
-                      setAuthRole('customer');
-                      setRegPassword('');
-                      triggerToast(`Tạo tài khoản thành công. Chào mừng ${chosenName}.`);
-                      navigateTo(
-                        returnPage === 'login' || returnPage === 'register' || returnPage === 'admin'
-                          ? 'home'
-                          : returnPage,
-                        'customer'
-                      );
-                    }}
-                    className="space-y-4"
-                  >
+                  <form onSubmit={handleRegisterSubmit} className="space-y-4">
                     <div>
                       <h1 className="text-[22px] font-extrabold text-[#17324d]">
                         Đăng ký hội viên mới
@@ -3593,7 +3781,7 @@ export function App() {
                           value={regName}
                           onChange={(e) => {
                             setRegName(e.target.value);
-                            if (regError) setRegError('');
+                            if (regError) setRegError(null);
                           }}
                           placeholder="VD: Nguyễn Minh Anh"
                           className="w-full h-11 rounded-xl bg-[#f8faff] border border-[#dfe6f0] focus:border-[#0667d0] px-3.5 text-[13px] font-medium text-[#17324d] focus:outline-none"
@@ -3609,7 +3797,7 @@ export function App() {
                           value={regPhone}
                           onChange={(e) => {
                             setRegPhone(e.target.value);
-                            if (regError) setRegError('');
+                            if (regError) setRegError(null);
                           }}
                           placeholder="VD: 0901 234 567"
                           className="w-full h-11 rounded-xl bg-[#f8faff] border border-[#dfe6f0] focus:border-[#0667d0] px-3.5 text-[13px] font-medium text-[#17324d] focus:outline-none"
@@ -3627,7 +3815,7 @@ export function App() {
                         value={regEmail}
                         onChange={(e) => {
                           setRegEmail(e.target.value);
-                          if (regError) setRegError('');
+                          if (regError) setRegError(null);
                         }}
                         placeholder="VD: minhanh@email.com"
                         className="w-full h-11 rounded-xl bg-[#f8faff] border border-[#dfe6f0] focus:border-[#0667d0] px-3.5 text-[13px] font-medium text-[#17324d] focus:outline-none"
@@ -3647,7 +3835,7 @@ export function App() {
                           value={regPassword}
                           onChange={(e) => {
                             setRegPassword(e.target.value);
-                            if (regError) setRegError('');
+                            if (regError) setRegError(null);
                           }}
                           placeholder="Nhập mật khẩu (tối thiểu 6 ký tự)"
                           className="w-full h-11 rounded-xl bg-[#f8faff] border border-[#dfe6f0] focus:border-[#0667d0] pl-10 pr-10 text-[13px] font-medium text-[#17324d] focus:outline-none"
@@ -3674,7 +3862,6 @@ export function App() {
                 )}
               </div>
 
-              {/* Compact Member Benefits Row Below Form */}
               <div className="w-full max-w-[780px] grid grid-cols-1 sm:grid-cols-3 gap-3">
                 {[
                   {
@@ -3740,7 +3927,7 @@ export function App() {
                     <p className="text-[14px] text-[#52657a]">
                       Cảm ơn {lastOrder?.customerName || (isLoggedIn ? userName : 'Quý khách')}. Đơn hàng{' '}
                       <span className="font-bold text-[#0667d0]">{lastOrder?.code || '#PH8899'}</span>{' '}
-                      đã được xác nhận qua <span className="font-semibold text-[#17324d]">{lastOrder?.paymentMethod || 'VNPay'}</span>.
+                      đã được lưu vào hệ thống qua <span className="font-semibold text-[#17324d]">{lastOrder?.paymentMethod || 'VNPay'}</span>.
                     </p>
                   </div>
                 ) : (
@@ -3762,7 +3949,7 @@ export function App() {
                     <span className="font-bold text-[#0667d0]">
                       Mã đơn hàng: {lastOrder?.code || '#PH8899'}
                     </span>
-                    <span className="text-[#52657a]">Ngày: {lastOrder?.date || '25/10/2026'}</span>
+                    <span className="text-[#52657a]">Ngày: {lastOrder?.date || '17/11/2026'}</span>
                   </div>
 
                   {(lastOrder?.customerPhone || lastOrder?.shippingAddress || lastOrder?.paymentMethod) && (
@@ -3864,27 +4051,27 @@ export function App() {
               </div>
             </motion.div>
           )}
-        </AnimatePresence>
-      </main>
+            </AnimatePresence>
+          </main>
 
-      {/* Footer */}
-      {isCompactLayout ? (
-        <CompactFooter onNavigate={navigateTo} />
-      ) : (
-        <PetHubFooter
-          onNavigate={navigateTo}
-          onSelectCategory={handleSelectCategory}
-          isLoggedIn={isLoggedIn}
-          onQuickToast={triggerToast}
-        />
-      )}
+          {/* Footer */}
+          {isCompactLayout ? (
+            <CompactFooter onNavigate={navigateTo} />
+          ) : (
+            <PetHubFooter
+              onNavigate={navigateTo}
+              onSelectCategory={handleSelectCategory}
+              isLoggedIn={isLoggedIn}
+              onQuickToast={triggerToast}
+            />
+          )}
         </>
       )}
 
       {/* Confirmation Dialog */}
       <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
 
-      {/* Guest Order Lookup Modal */}
+      {/* Guest Order Lookup Modal (Queries SQL Server /api/orders/lookup) */}
       <AnimatePresence>
       {lookupOpen && (
         <motion.div
@@ -3918,7 +4105,7 @@ export function App() {
                     Tra cứu đơn hàng
                   </h3>
                   <p className="text-[13px] text-[#52657a] mt-0.5">
-                    Nhập số điện thoại và mã đơn hàng để kiểm tra trạng thái đơn vừa đặt.
+                    Nhập số điện thoại và mã đơn hàng để kiểm tra trực tiếp từ hệ thống.
                   </p>
                 </div>
               </div>
@@ -3946,7 +4133,7 @@ export function App() {
                       setLookupPhone(e.target.value);
                       if (lookupError) setLookupError(null);
                     }}
-                    placeholder="VD: 0909 123 456"
+                    placeholder="VD: 0907 345 112"
                     className="w-full h-10 px-3 rounded-xl bg-[#f8faff] border border-[#dfe6f0] focus:border-[#0667d0] text-[13px] text-[#17324d] focus:outline-none"
                   />
                 </div>
@@ -3962,7 +4149,7 @@ export function App() {
                       setLookupCode(e.target.value);
                       if (lookupError) setLookupError(null);
                     }}
-                    placeholder="VD: PH123456"
+                    placeholder="VD: PH261116"
                     className="w-full h-10 px-3 rounded-xl bg-[#f8faff] border border-[#dfe6f0] focus:border-[#0667d0] text-[13px] text-[#17324d] focus:outline-none uppercase"
                   />
                 </div>
@@ -3989,7 +4176,7 @@ export function App() {
                   </button>
                 ) : (
                   <span className="text-[11px] text-[#52657a]">
-                    Mã mẫu: PH261108 · SĐT: 0909 123 456
+                    Mã mẫu DB: PH261116 · SĐT: 0907345112
                   </span>
                 )}
                 <button
