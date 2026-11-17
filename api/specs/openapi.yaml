@@ -1,0 +1,71 @@
+openapi: 3.0.3
+info:
+  title: QLThuCung RESTful API
+  version: 1.0.0
+  description: >
+    Tài liệu đặc tả RESTful API làm cầu nối giữa Backend (Node.js + SQL Server)
+    và Frontend (React) cho dự án Quản lý Thú Cưng.
+
+servers:
+  - url: http://localhost:5000/api
+    description: Backend Local Server
+
+tags:
+  - name: System
+    description: Kiểm tra trạng thái hệ thống
+  - name: Pets
+    description: Quản lý thú cưng (mẫu tham khảo)
+
+paths:
+  /health:
+    get:
+      tags:
+        - System
+      summary: Kiểm tra kết nối API
+      responses:
+        "200":
+          description: API đang hoạt động bình thường
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  message:
+                    type: string
+                    example: QLThuCung API is running
+
+  /pets:
+    get:
+      tags:
+        - Pets
+      summary: Lấy danh sách thú cưng
+      responses:
+        "200":
+          description: Thành công
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Pet"
+
+components:
+  schemas:
+    Pet:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        name:
+          type: string
+          example: Milo
+        species:
+          type: string
+          example: Chó
+        age:
+          type: integer
+          example: 2
