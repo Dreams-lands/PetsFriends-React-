@@ -1,0 +1,59 @@
+# Dependencies
+node_modules/
+*/node_modules/
+.pnp
+.pnp.js
+
+# Build outputs
+dist/
+build/
+out/
+*/dist/
+*/build/
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*/.env
+*/.env.*
+!.env.example
+!*/.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# SQL Server / Database local & backup files
+*.bak
+*.mdf
+*.ldf
+*.ndf
+*.trn
+*.dacpac
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Test coverage
+coverage/
+*/coverage/
+
+# Uploaded media files (keep folder structure via .gitkeep)
+backend/uploads/*
+!backend/uploads/products/
+backend/uploads/products/*
+!backend/uploads/products/.gitkeep
