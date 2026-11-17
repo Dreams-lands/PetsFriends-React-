@@ -154,7 +154,7 @@ export const ADMIN_EXTRA_ORDERS: LookupOrderEntry[] = [
       {
         id: 'prod-rc-mini-adult',
         name: 'Hạt dinh dưỡng cho chó giống nhỏ Mini Adult (2 kg)',
-        image: '/images/prod-rc-mini.jpg',
+        image: 'https://images.unsplash.com/photo-1589924691995-400dc9ecc119?auto=format&fit=crop&w=900&q=85',
         price: 389000,
         quantity: 1,
         variant: 'Túi 2 kg',

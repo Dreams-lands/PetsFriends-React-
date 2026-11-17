@@ -49,3 +49,9 @@ desktop.ini
 # Test coverage
 coverage/
 */coverage/
+
+# Uploaded media files (keep folder structure via .gitkeep)
+backend/uploads/*
+!backend/uploads/products/
+backend/uploads/products/*
+!backend/uploads/products/.gitkeep
