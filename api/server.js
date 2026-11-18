@@ -10,6 +10,7 @@ const authAndUserRoutes = require('../backend/src/routes/authAndUserRoutes');
 const productRoutes = require('../backend/src/routes/productRoutes');
 const orderRoutes = require('../backend/src/routes/orderRoutes');
 const spaAndContactRoutes = require('../backend/src/routes/spaAndContactRoutes');
+const paymentRoutes = require('../backend/src/routes/paymentRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -73,6 +74,7 @@ app.use('/api', authAndUserRoutes);
 app.use('/api', productRoutes);
 app.use('/api', orderRoutes);
 app.use('/api', spaAndContactRoutes);
+app.use('/api', paymentRoutes);
 
 // Xử lý đường dẫn API không tồn tại
 app.use('/api/*', (req, res) => {

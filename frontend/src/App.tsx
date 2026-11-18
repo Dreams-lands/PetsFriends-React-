@@ -37,6 +37,7 @@ import {
   Banknote,
   Store,
   PackageSearch,
+  Loader2,
 } from 'lucide-react';
 import type {
   PageId,
@@ -72,7 +73,9 @@ import {
 import {
   petsFriendApi,
   getApiErrorMessage,
+  setStoredAuthToken,
   type AuthUserDto,
+  type OnlinePaymentSessionDto,
 } from './services/petsFriendApi';
 
 const AdminWorkspace = lazy(() =>
@@ -100,11 +103,14 @@ import type { AccountTab } from './components/AccountPage';
 import { TiltCard } from './components/TiltCard';
 import { FloatingContact } from './components/FloatingContact';
 import { ConfirmDialog, type ConfirmDialogState } from './components/ConfirmDialog';
+import { QrCodeSvg } from './components/QrCodeSvg';
+import { PaymentQrModal } from './components/PaymentQrModal';
 import { useModalFocusTrap } from './lib/useModalFocusTrap';
 import { useThemeDroplet } from './lib/useThemeDroplet';
 
 interface OrderSnapshot {
   code: string;
+  persistedInDb?: boolean;
   date: string;
   items: CartItem[];
   total: number;
@@ -114,6 +120,7 @@ interface OrderSnapshot {
   shippingAddress?: string;
   deliveryMethod?: DeliveryMethodId;
   paymentMethod?: string;
+  paymentMethodCode?: PaymentMethodId;
   failReason?: string;
   isGuest?: boolean;
 }
@@ -318,6 +325,12 @@ export function App() {
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [lookupResult, setLookupResult] = useState<LookupOrderEntry | null>(null);
   const [lastOrder, setLastOrder] = useState<OrderSnapshot | null>(null);
+  const [activeQrSession, setActiveQrSession] = useState<OnlinePaymentSessionDto | null>(null);
+  const [qrSessionMeta, setQrSessionMeta] = useState<{ phone: string; name: string }>({
+    phone: '',
+    name: '',
+  });
+  const [isSubmittingCheckout, setIsSubmittingCheckout] = useState(false);
 
   // Service Booking State
   const [bookingPetType, setBookingPetType] = useState('Chó nhỏ (< 5kg)');
@@ -362,11 +375,12 @@ export function App() {
 
   // Tải toàn bộ dữ liệu thật từ SQL Server ngay khi mở ứng dụng
   const syncBackendData = useCallback(async () => {
-    const [prodRes, pkgRes, ordRes, bkRes] = await Promise.allSettled([
+    const [prodRes, pkgRes, ordRes, bkRes, gwRes] = await Promise.allSettled([
       petsFriendApi.getProducts(),
       petsFriendApi.getSpaPackages(),
       petsFriendApi.getOrders(),
       petsFriendApi.getBookings(),
+      petsFriendApi.getPaymentGateways(),
     ]);
 
     if (prodRes.status === 'fulfilled' && prodRes.value.length > 0) {
@@ -381,6 +395,50 @@ export function App() {
     if (bkRes.status === 'fulfilled') {
       setBookings(bkRes.value);
     }
+    if (gwRes.status === 'fulfilled' && gwRes.value) {
+      setPaymentGateways((prev) => ({
+        ...prev,
+        codEnabled: gwRes.value.codEnabled ?? prev.codEnabled,
+        codNote: gwRes.value.codNote ?? prev.codNote,
+        vnpayEnabled: gwRes.value.vnpayEnabled ?? prev.vnpayEnabled,
+        vnpayTmnCode: gwRes.value.vnpayTmnCode || prev.vnpayTmnCode,
+        vnpayEnvironment: gwRes.value.vnpayEnvironment || prev.vnpayEnvironment,
+        vnpayHashSecret: gwRes.value.vnpayHashSecret || prev.vnpayHashSecret,
+        momoEnabled: gwRes.value.momoEnabled ?? prev.momoEnabled,
+        momoPartnerCode: gwRes.value.momoPartnerCode || prev.momoPartnerCode,
+        momoEnvironment: gwRes.value.momoEnvironment || prev.momoEnvironment,
+        momoAccessKey: gwRes.value.momoAccessKey || prev.momoAccessKey,
+        momoSecretKey: gwRes.value.momoSecretKey || prev.momoSecretKey,
+      }));
+    }
+  }, []);
+
+  // Đón kết quả redirect từ cổng VNPay / MoMo Web (nếu có query ?payment=success|failed&orderCode=...)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const paymentOutcome = params.get('payment');
+    const returnedCode = params.get('orderCode');
+    const returnedGateway = params.get('gateway');
+    if (!paymentOutcome || !returnedCode) return;
+
+    const gwLabel = returnedGateway === 'momo' ? 'MoMo' : 'VNPay';
+    setLastOrder({
+      code: `#${returnedCode.replace(/^#/, '')}`,
+      persistedInDb: true,
+      date: new Date().toLocaleDateString('vi-VN'),
+      items: [],
+      total: 0,
+      paymentMethod: gwLabel,
+      paymentMethodCode: returnedGateway === 'momo' ? 'momo' : 'vnpay',
+      failReason:
+        paymentOutcome === 'success'
+          ? undefined
+          : 'Giao dịch trên cổng thanh toán chưa hoàn tất hoặc bị hủy',
+    });
+    setCartItems([]);
+    setCurrentPage(paymentOutcome === 'success' ? 'checkout-success' : 'checkout-fail');
+    window.history.replaceState(null, '', window.location.pathname + window.location.hash);
   }, []);
 
   useEffect(() => {
@@ -709,6 +767,7 @@ export function App() {
       onConfirm: () => {
         if (typeof window !== 'undefined') {
           window.localStorage.removeItem(AUTH_STORAGE_KEY);
+          setStoredAuthToken(null);
           if (window.location.hash === '#/admin' || window.location.hash === '#/staff') {
             window.history.replaceState(null, '', window.location.pathname + window.location.search);
           }
@@ -989,7 +1048,14 @@ export function App() {
   });
 
   useEffect(() => {
-    if (currentPage !== 'cart' || cartItems.length === 0) return;
+    if (
+      currentPage !== 'cart' ||
+      cartItems.length === 0 ||
+      activeQrSession !== null ||
+      isSubmittingCheckout
+    ) {
+      return;
+    }
     const intervalId = window.setInterval(() => {
       setPaymentSecondsLeft((prev) => {
         if (prev <= 1) {
@@ -1001,7 +1067,33 @@ export function App() {
       });
     }, 1000);
     return () => window.clearInterval(intervalId);
-  }, [currentPage, cartItems.length]);
+  }, [currentPage, cartItems.length, activeQrSession, isSubmittingCheckout]);
+
+  const handleOpenOrderQr = async (
+    orderCode: string,
+    gateway: 'vnpay' | 'momo',
+    phone: string,
+    customerName: string
+  ) => {
+    try {
+      const cleanCode = orderCode.replace(/^#/, '').trim();
+      const session =
+        gateway === 'momo'
+          ? await petsFriendApi.createMomoPayment({
+              orderCode: cleanCode,
+              phone,
+              sandboxFallback: true,
+            })
+          : await petsFriendApi.createVnpayPayment({
+              orderCode: cleanCode,
+              phone,
+            });
+      setQrSessionMeta({ phone, name: customerName });
+      setActiveQrSession(session);
+    } catch (err) {
+      triggerToast(getApiErrorMessage(err, 'Không thể khởi tạo mã QR thanh toán cho đơn này.'));
+    }
+  };
 
   const openOrderLookupModal = () => {
     setLookupError(null);
@@ -1079,6 +1171,7 @@ export function App() {
         : activeAddress;
     const customerLabel = activeName || (isLoggedIn ? userName : 'Quý khách');
 
+    setIsSubmittingCheckout(true);
     try {
       const res = await petsFriendApi.createOrder({
         id: orderNum,
@@ -1106,15 +1199,17 @@ export function App() {
 
       setLastOrder({
         code: `#${createdOrder.id}`,
+        persistedInDb: true,
         date: nowLabel,
         items: [...cartItems],
-        total: cartFinalTotal,
+        total: createdOrder.totalAmount || cartFinalTotal,
         customerName: customerLabel,
         customerPhone: activePhone,
         customerEmail: activeEmail || (isLoggedIn ? userEmail : ''),
         shippingAddress: resolvedAddress,
         deliveryMethod,
         paymentMethod: selectedPaymentLabel,
+        paymentMethodCode: effectivePaymentMethod,
         isGuest: !isLoggedIn,
       });
 
@@ -1127,12 +1222,33 @@ export function App() {
       const refreshedProducts = await petsFriendApi.getProducts();
       setProducts(refreshedProducts);
 
+      // Nếu khách chọn VNPay hoặc MoMo -> tạo phiên thanh toán & mở cửa sổ mã QR ngay
+      if (effectivePaymentMethod === 'vnpay' || effectivePaymentMethod === 'momo') {
+        const paymentSession =
+          effectivePaymentMethod === 'momo'
+            ? await petsFriendApi.createMomoPayment({
+                orderCode: createdOrder.id,
+                phone: activePhone,
+                sandboxFallback: true,
+              })
+            : await petsFriendApi.createVnpayPayment({
+                orderCode: createdOrder.id,
+                phone: activePhone,
+              });
+
+        setQrSessionMeta({ phone: activePhone, name: customerLabel });
+        setActiveQrSession(paymentSession);
+        return;
+      }
+
       setCartItems([]);
       navigateTo('checkout-success');
     } catch (err) {
       const msg = getApiErrorMessage(err, 'Không thể tạo đơn hàng lúc này.');
       setCheckoutError(msg);
       triggerToast(msg);
+    } finally {
+      setIsSubmittingCheckout(false);
     }
   };
 
@@ -1380,7 +1496,30 @@ export function App() {
             }}
             onSavePaymentGateways={(next) => {
               setPaymentGateways(next);
-              triggerToast('Đã cập nhật trạng thái các cổng thanh toán.');
+              void petsFriendApi
+                .updatePaymentGateways(next)
+                .then((saved) => {
+                  setPaymentGateways((prev) => ({
+                    ...prev,
+                    codEnabled: saved.codEnabled ?? next.codEnabled,
+                    codNote: saved.codNote ?? next.codNote,
+                    vnpayEnabled: saved.vnpayEnabled ?? next.vnpayEnabled,
+                    vnpayTmnCode: saved.vnpayTmnCode || next.vnpayTmnCode,
+                    vnpayEnvironment: saved.vnpayEnvironment || next.vnpayEnvironment,
+                    vnpayHashSecret: saved.vnpayHashSecret || next.vnpayHashSecret,
+                    momoEnabled: saved.momoEnabled ?? next.momoEnabled,
+                    momoPartnerCode: saved.momoPartnerCode || next.momoPartnerCode,
+                    momoEnvironment: saved.momoEnvironment || next.momoEnvironment,
+                    momoAccessKey: saved.momoAccessKey || next.momoAccessKey,
+                    momoSecretKey: saved.momoSecretKey || next.momoSecretKey,
+                  }));
+                  triggerToast('Đã lưu cấu hình các cổng thanh toán vào SQL Server.');
+                })
+                .catch((err) => {
+                  triggerToast(
+                    getApiErrorMessage(err, 'Đã cập nhật tạm thời (chưa lưu được lên SQL Server).')
+                  );
+                });
             }}
             onExitToStorefront={() => navigateTo('home')}
             onLogout={handleLogout}
@@ -2405,6 +2544,14 @@ export function App() {
                   });
                   navigateTo('cart');
                 }}
+                onPayOrderQr={(order) => {
+                  const gw =
+                    order.paymentMethodCode === 'momo' ||
+                    order.paymentMethod.toLowerCase().includes('momo')
+                      ? 'momo'
+                      : 'vnpay';
+                  void handleOpenOrderQr(order.id, gw, userPhone, userName);
+                }}
                 onOpenProduct={(id) => {
                   const found = products.find((p) => p.id === id);
                   if (found) openProductDetail(found);
@@ -3120,6 +3267,75 @@ export function App() {
                           );
                         })}
                       </div>
+
+                      {/* Hiện ngay mã QR xem trước khi người dùng bấm chọn VNPay hoặc MoMo */}
+                      {(effectivePaymentMethod === 'vnpay' ||
+                        effectivePaymentMethod === 'momo') && (
+                        <div
+                          className={`mt-2.5 rounded-2xl border p-3.5 space-y-2.5 transition-all ${
+                            effectivePaymentMethod === 'momo'
+                              ? 'bg-[#fdf2f8] border-[#f5c2df]'
+                              : 'bg-[#f3f8ff] border-[#c8ddf8]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <span
+                              className={`text-[12px] font-extrabold ${
+                                effectivePaymentMethod === 'momo'
+                                  ? 'text-[#a50064]'
+                                  : 'text-[#005baa]'
+                              }`}
+                            >
+                              {effectivePaymentMethod === 'momo'
+                                ? 'Mã QR Ví điện tử MoMo'
+                                : 'Mã QR cổng VNPay'}
+                            </span>
+                            <span className="px-2 py-0.5 rounded-full bg-white border border-[#dfe6f0] text-[10px] font-bold uppercase text-[#52657a]">
+                              {(effectivePaymentMethod === 'momo'
+                                ? paymentGateways.momoEnvironment
+                                : paymentGateways.vnpayEnvironment) === 'production'
+                                ? 'Production'
+                                : 'Sandbox'}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-3.5 bg-white rounded-xl p-3 border border-[#dfe6f0]">
+                            <QrCodeSvg
+                              value={
+                                effectivePaymentMethod === 'momo'
+                                  ? `momo://app?action=payWithApp&partnerCode=${encodeURIComponent(
+                                      paymentGateways.momoPartnerCode || 'MOMO'
+                                    )}&amount=${cartFinalTotal}&comment=PETSFRIEND`
+                                  : `PETSFRIEND|VNPAYQR|TMN=${
+                                      paymentGateways.vnpayTmnCode || 'PETHUB01'
+                                    }|AMOUNT=${cartFinalTotal}|VND`
+                              }
+                              size={116}
+                              badgeText={effectivePaymentMethod === 'momo' ? 'MoMo' : 'VNPAY'}
+                              badgeColor={
+                                effectivePaymentMethod === 'momo' ? '#a50064' : '#005baa'
+                              }
+                              className="shrink-0"
+                            />
+                            <div className="space-y-1 min-w-0 text-[11.5px]">
+                              <div className="text-[#52657a]">Số tiền quét QR:</div>
+                              <div
+                                className={`text-[16px] font-extrabold tabular-nums ${
+                                  effectivePaymentMethod === 'momo'
+                                    ? 'text-[#a50064]'
+                                    : 'text-[#005baa]'
+                                }`}
+                              >
+                                {cartFinalTotal.toLocaleString('vi-VN')}₫
+                              </div>
+                              <div className="text-[11px] text-[#52657a] leading-snug">
+                                Điền thông tin nhận hàng rồi bấm nút bên dưới để tạo mã đơn &amp; mở{' '}
+                                <strong>cửa sổ quét QR chính thức</strong>.
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
 
                     {checkoutError && (
@@ -3156,11 +3372,27 @@ export function App() {
 
                     <button
                       type="button"
+                      disabled={isSubmittingCheckout}
                       onClick={handleCheckout}
-                      className="w-full py-3 px-4 rounded-xl bg-[#c2410c] hover:bg-[#9a3412] text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                      className="w-full py-3 px-4 rounded-xl bg-[#c2410c] hover:bg-[#9a3412] disabled:opacity-65 text-white font-bold text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors"
                     >
-                      <span>Xác nhận thanh toán</span>
-                      <ArrowRight className="w-4 h-4" />
+                      {isSubmittingCheckout ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Đang khởi tạo giao dịch...</span>
+                        </>
+                      ) : (
+                        <>
+                          <span>
+                            {effectivePaymentMethod === 'vnpay'
+                              ? 'Tạo đơn & Quét mã VNPay QR'
+                              : effectivePaymentMethod === 'momo'
+                                ? 'Tạo đơn & Quét mã MoMo QR'
+                                : 'Xác nhận đặt hàng (COD)'}
+                          </span>
+                          <ArrowRight className="w-4 h-4" />
+                        </>
+                      )}
                     </button>
                   </div>
                 </div>
@@ -4030,7 +4262,26 @@ export function App() {
                     <span>Tiếp tục mua sắm</span>
                     <ArrowRight className="w-4 h-4" />
                   </button>
-                  {currentPage === 'checkout-success' && !isLoggedIn ? (
+                  {currentPage === 'checkout-fail' &&
+                  lastOrder?.persistedInDb &&
+                  (lastOrder.paymentMethodCode === 'vnpay' ||
+                    lastOrder.paymentMethodCode === 'momo') ? (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleOpenOrderQr(
+                          lastOrder.code,
+                          lastOrder.paymentMethodCode as 'vnpay' | 'momo',
+                          lastOrder.customerPhone || '',
+                          lastOrder.customerName || 'Quý khách'
+                        )
+                      }
+                      className="py-3 px-5 rounded-xl border border-[#0667d0] bg-[#eff5ff] hover:bg-[#dbeafe] text-[#0667d0] font-bold text-[14px] flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <QrCode className="w-4 h-4" />
+                      <span>Mở lại mã QR thanh toán</span>
+                    </button>
+                  ) : currentPage === 'checkout-success' && !isLoggedIn ? (
                     <button
                       type="button"
                       onClick={openOrderLookupModal}
@@ -4214,6 +4465,9 @@ export function App() {
                   <div>
                     <span className="font-semibold text-[#17324d]">Thanh toán: </span>
                     {lookupResult.paymentMethod}
+                    {lookupResult.paymentStatusLabel
+                      ? ` (${lookupResult.paymentStatusLabel})`
+                      : ''}
                   </div>
                   <div className="sm:col-span-2">
                     <span className="font-semibold text-[#17324d]">
@@ -4253,12 +4507,127 @@ export function App() {
                     {lookupResult.totalAmount.toLocaleString('vi-VN')}₫
                   </span>
                 </div>
+
+                {lookupResult.status !== 'cancelled' &&
+                  (lookupResult.paymentStatus === 'unpaid' ||
+                    lookupResult.paymentStatus === 'failed') &&
+                  (lookupResult.paymentMethodCode === 'vnpay' ||
+                    lookupResult.paymentMethodCode === 'momo' ||
+                    lookupResult.paymentMethod.toLowerCase().includes('vnpay') ||
+                    lookupResult.paymentMethod.toLowerCase().includes('momo')) && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const gw =
+                          lookupResult.paymentMethodCode === 'momo' ||
+                          lookupResult.paymentMethod.toLowerCase().includes('momo')
+                            ? 'momo'
+                            : 'vnpay';
+                        setLookupOpen(false);
+                        void handleOpenOrderQr(
+                          lookupResult.id,
+                          gw,
+                          lookupResult.customerPhone,
+                          lookupResult.customerName
+                        );
+                      }}
+                      className="w-full py-2.5 px-4 rounded-xl bg-[#0667d0] hover:bg-[#0558b5] text-white text-[12.5px] font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                    >
+                      <QrCode className="w-4 h-4" />
+                      <span>Quét mã QR để thanh toán đơn này</span>
+                    </button>
+                  )}
               </div>
             )}
           </motion.div>
         </motion.div>
       )}
       </AnimatePresence>
+
+      {/* Payment QR Modal (VNPay / MoMo) */}
+      <PaymentQrModal
+        session={activeQrSession}
+        customerPhone={qrSessionMeta.phone}
+        customerName={qrSessionMeta.name}
+        onPaid={(updatedOrder) => {
+          const paidCode = activeQrSession?.orderCode;
+          setActiveQrSession(null);
+          if (paidCode) {
+            const patchOrder = (o: LookupOrderEntry): LookupOrderEntry =>
+              o.id === paidCode
+                ? updatedOrder || {
+                    ...o,
+                    paymentStatus: 'paid',
+                    paymentStatusLabel: 'Đã thanh toán',
+                  }
+                : o;
+            setLookupEntries((prev) => prev.map(patchOrder));
+            setOrders((prev) =>
+              prev.map((o) =>
+                o.id === paidCode
+                  ? updatedOrder || {
+                      ...o,
+                      paymentStatus: 'paid',
+                      paymentStatusLabel: 'Đã thanh toán',
+                    }
+                  : o
+              )
+            );
+          }
+          setLastOrder((prev) => (prev ? { ...prev, failReason: undefined } : prev));
+          setCartItems([]);
+          triggerToast('Đã xác nhận thanh toán QR thành công!');
+          navigateTo('checkout-success');
+        }}
+        onFailed={(reason, updatedOrder) => {
+          const failedCode = activeQrSession?.orderCode;
+          setActiveQrSession(null);
+          if (failedCode) {
+            setLookupEntries((prev) =>
+              prev.map((o) =>
+                o.id === failedCode
+                  ? updatedOrder || {
+                      ...o,
+                      paymentStatus: 'failed',
+                      paymentStatusLabel: 'Thanh toán thất bại',
+                    }
+                  : o
+              )
+            );
+            setOrders((prev) =>
+              prev.map((o) =>
+                o.id === failedCode
+                  ? updatedOrder || {
+                      ...o,
+                      paymentStatus: 'failed',
+                      paymentStatusLabel: 'Thanh toán thất bại',
+                    }
+                  : o
+              )
+            );
+          }
+          setLastOrder((prev) => (prev ? { ...prev, failReason: reason } : prev));
+          setCartItems([]);
+          navigateTo('checkout-fail');
+        }}
+        onClose={() => {
+          setActiveQrSession(null);
+          setCartItems([]);
+          setLastOrder((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  failReason: 'Đơn hàng đã tạo (Chờ thanh toán QR)',
+                }
+              : prev
+          );
+          triggerToast(
+            'Đơn hàng đã được lưu ở trạng thái Chờ thanh toán. Bạn có thể mở lại mã QR bất cứ lúc nào.'
+          );
+          navigateTo('checkout-fail');
+        }}
+        onNotify={triggerToast}
+      />
 
       {/* Floating Contact Stack */}
       {currentPage !== 'admin' && (

@@ -50,6 +50,19 @@ function formatPaymentMethodLabel(code) {
   return 'Thanh toán khi nhận hàng (COD)';
 }
 
+function formatPaymentStatusLabel(status) {
+  switch (status) {
+    case 'paid':
+      return 'Đã thanh toán';
+    case 'failed':
+      return 'Thanh toán thất bại';
+    case 'refunded':
+      return 'Đã hoàn tiền';
+    default:
+      return 'Chưa thanh toán';
+  }
+}
+
 function parseMoneyNumber(val) {
   if (val === null || val === undefined || val === '') return null;
   if (typeof val === 'number') return val;
@@ -169,6 +182,9 @@ function mapOrderRow(row, itemRows = []) {
     shippingAddress: row.ShippingAddress,
     paymentMethod: formatPaymentMethodLabel(row.PaymentMethod),
     paymentMethodCode: row.PaymentMethod,
+    paymentStatus: row.PaymentStatus || (row.OrderSource === 'pos' ? 'paid' : 'unpaid'),
+    paymentStatusLabel: formatPaymentStatusLabel(row.PaymentStatus || (row.OrderSource === 'pos' ? 'paid' : 'unpaid')),
+    paidAt: row.PaidAt || null,
     deliveryMethod: row.DeliveryMethod,
     customerName: row.CustomerName,
     customerPhone: row.CustomerPhone,
@@ -251,6 +267,7 @@ module.exports = {
   formatIsoDateOnly,
   normalizePaymentMethodCode,
   formatPaymentMethodLabel,
+  formatPaymentStatusLabel,
   parseMoneyNumber,
   normalizePhoneDigits,
   mapReviewRow,

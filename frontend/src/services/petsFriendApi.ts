@@ -4,15 +4,41 @@ import type {
   DeliveryMethodId,
   LookupOrderEntry,
   OrderStatus,
+  PaymentMethodId,
+  PaymentStatus,
   ProductItem,
   ProductReview,
   ServiceBookingRecord,
   SpaPackage,
 } from '../data/mockData';
-import type { WorkspaceUserRole } from '../data/adminData';
+import type { PaymentGatewayConfig, WorkspaceUserRole } from '../data/adminData';
 
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000/api';
+
+const AUTH_TOKEN_STORAGE_KEY = 'petsfriend_auth_token';
+
+export function setStoredAuthToken(token?: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if (token) {
+      window.localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    } else {
+      window.localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+    }
+  } catch {
+    // ignore storage errors
+  }
+}
+
+export function getStoredAuthToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
 
 const http = axios.create({
   baseURL: API_BASE_URL,
@@ -21,6 +47,40 @@ const http = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+http.interceptors.request.use((config) => {
+  const token = getStoredAuthToken();
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+export interface OnlinePaymentSessionDto {
+  message: string;
+  gateway: 'vnpay' | 'momo';
+  environment: 'sandbox' | 'production';
+  sandboxFallback?: boolean;
+  orderCode: string;
+  txnRef: string;
+  amount: number;
+  expireAt?: string;
+  paymentUrl: string;
+  qrScanUrl?: string;
+  qrCodeUrl?: string | null;
+  deeplink?: string | null;
+}
+
+export interface OrderPaymentDetailDto {
+  orderCode: string;
+  orderStatus: OrderStatus;
+  paymentMethod: PaymentMethodId | string;
+  paymentStatus: PaymentStatus;
+  paymentStatusLabel: string;
+  totalAmount: number;
+  paidAt: string | null;
+  canPayOnline: boolean;
+}
 
 export interface AuthUserDto {
   userId: number;
@@ -179,11 +239,26 @@ export const petsFriendApi = {
 
   createOrder: async (
     payload: CreateOrderPayload
-  ): Promise<{ message: string; order: LookupOrderEntry }> => {
-    const res = await http.post<{ message: string; order: LookupOrderEntry }>(
-      '/orders',
-      payload
-    );
+  ): Promise<{
+    message: string;
+    order: LookupOrderEntry;
+    payment?: {
+      required: boolean;
+      method: string;
+      status: PaymentStatus;
+      nextStep: string | null;
+    };
+  }> => {
+    const res = await http.post<{
+      message: string;
+      order: LookupOrderEntry;
+      payment?: {
+        required: boolean;
+        method: string;
+        status: PaymentStatus;
+        nextStep: string | null;
+      };
+    }>('/orders', payload);
     return res.data;
   },
 
@@ -205,14 +280,17 @@ export const petsFriendApi = {
     password: string
   ): Promise<{
     message: string;
+    token?: string;
     user: AuthUserDto;
     addresses: AddressRecord[];
   }> => {
     const res = await http.post<{
       message: string;
+      token?: string;
       user: AuthUserDto;
       addresses: AddressRecord[];
     }>('/auth/login', { identifier, password });
+    if (res.data.token) setStoredAuthToken(res.data.token);
     return res.data;
   },
 
@@ -221,11 +299,12 @@ export const petsFriendApi = {
     email: string;
     phone: string;
     password: string;
-  }): Promise<{ message: string; user: AuthUserDto }> => {
-    const res = await http.post<{ message: string; user: AuthUserDto }>(
+  }): Promise<{ message: string; token?: string; user: AuthUserDto }> => {
+    const res = await http.post<{ message: string; token?: string; user: AuthUserDto }>(
       '/auth/register',
       payload
     );
+    if (res.data.token) setStoredAuthToken(res.data.token);
     return res.data;
   },
 
@@ -289,5 +368,78 @@ export const petsFriendApi = {
     message: string;
   }): Promise<void> => {
     await http.post('/contact-messages', payload);
+  },
+
+  // 6. Cổng thanh toán trực tuyến (VNPay QR, MoMo QR, COD)
+  getPaymentGateways: async (): Promise<PaymentGatewayConfig> => {
+    const res = await http.get<PaymentGatewayConfig>('/payment-gateways');
+    return res.data;
+  },
+
+  updatePaymentGateways: async (
+    payload: Partial<PaymentGatewayConfig>
+  ): Promise<PaymentGatewayConfig & { message: string }> => {
+    const res = await http.put<PaymentGatewayConfig & { message: string }>(
+      '/payment-gateways',
+      payload
+    );
+    return res.data;
+  },
+
+  createVnpayPayment: async (payload: {
+    orderCode: string;
+    phone?: string;
+    bankCode?: string;
+    returnUrl?: string;
+  }): Promise<OnlinePaymentSessionDto> => {
+    const res = await http.post<OnlinePaymentSessionDto>(
+      '/payments/vnpay/create',
+      payload
+    );
+    return res.data;
+  },
+
+  createMomoPayment: async (payload: {
+    orderCode: string;
+    phone?: string;
+    redirectUrl?: string;
+    sandboxFallback?: boolean;
+  }): Promise<OnlinePaymentSessionDto> => {
+    const res = await http.post<OnlinePaymentSessionDto>(
+      '/payments/momo/create',
+      payload
+    );
+    return res.data;
+  },
+
+  getOrderPayment: async (
+    orderCode: string,
+    phone?: string
+  ): Promise<OrderPaymentDetailDto> => {
+    const res = await http.get<OrderPaymentDetailDto>(
+      `/payments/orders/${encodeURIComponent(orderCode)}`,
+      { params: phone ? { phone } : undefined }
+    );
+    return res.data;
+  },
+
+  sandboxCompletePayment: async (
+    orderCode: string,
+    payload: { phone?: string; outcome?: 'success' | 'failed' }
+  ): Promise<{
+    message: string;
+    success: boolean;
+    orderCode: string;
+    txnRef: string;
+    order?: LookupOrderEntry;
+  }> => {
+    const res = await http.post<{
+      message: string;
+      success: boolean;
+      orderCode: string;
+      txnRef: string;
+      order?: LookupOrderEntry;
+    }>(`/payments/orders/${encodeURIComponent(orderCode)}/sandbox-complete`, payload);
+    return res.data;
   },
 };

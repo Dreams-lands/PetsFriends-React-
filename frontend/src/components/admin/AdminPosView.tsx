@@ -17,6 +17,7 @@ import {
 import type { LookupOrderEntry, ProductCategory, ProductItem } from '../../data/mockData';
 import { formatCurrency } from '../../data/mockData';
 import type { StoreSettings } from '../../data/adminData';
+import { QrCodeSvg } from '../QrCodeSvg';
 
 interface AdminPosViewProps {
   products: ProductItem[];
@@ -591,8 +592,59 @@ export const AdminPosView: React.FC<AdminPosViewProps> = ({
                 </div>
               </div>
             ) : (
-              <div className="rounded-xl bg-[#eff5ff] border border-[#c8ddf8] p-3 text-[12px] font-semibold text-[#0667d0]">
-                Khách quét mã {posPaymentMethod} tại quầy — tự động thu đủ {formatCurrency(posTotal)}.
+              <div
+                className={`rounded-xl border p-3.5 space-y-2.5 ${
+                  posPaymentMethod === 'MoMo'
+                    ? 'bg-[#fdf2f8] border-[#f5c2df]'
+                    : 'bg-[#eff5ff] border-[#c8ddf8]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span
+                    className={`text-[12px] font-extrabold ${
+                      posPaymentMethod === 'MoMo' ? 'text-[#a50064]' : 'text-[#005baa]'
+                    }`}
+                  >
+                    Mã QR {posPaymentMethod === 'MoMo' ? 'Ví MoMo' : 'VNPay QR'} tại quầy
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full bg-white text-[10.5px] font-bold text-[#52657a] border border-[#dfe6f0]">
+                    Thu tự động
+                  </span>
+                </div>
+
+                {posTotal > 0 ? (
+                  <div className="flex items-center gap-3 bg-white rounded-xl p-2.5 border border-[#dfe6f0]">
+                    <QrCodeSvg
+                      value={
+                        posPaymentMethod === 'MoMo'
+                          ? `momo://app?action=payWithApp&partnerCode=MOMO&amount=${posTotal}&comment=PETSFRIEND_POS`
+                          : `PETSFRIEND|VNPAYQR|POS|AMOUNT=${posTotal}|STORE=${storeSettings.storeName || 'PetsFriend'}`
+                      }
+                      size={112}
+                      badgeText={posPaymentMethod === 'MoMo' ? 'MoMo' : 'VNPAY'}
+                      badgeColor={posPaymentMethod === 'MoMo' ? '#a50064' : '#005baa'}
+                      className="shrink-0"
+                    />
+                    <div className="space-y-1 min-w-0 text-[11.5px]">
+                      <div className="text-[#52657a]">Số tiền quét QR:</div>
+                      <div
+                        className={`text-[16px] font-extrabold tabular-nums ${
+                          posPaymentMethod === 'MoMo' ? 'text-[#a50064]' : 'text-[#005baa]'
+                        }`}
+                      >
+                        {formatCurrency(posTotal)}
+                      </div>
+                      <p className="text-[11px] text-[#52657a] leading-snug">
+                        Khách quét mã {posPaymentMethod} xong, thu ngân bấm{' '}
+                        <strong>Thanh toán &amp; In hóa đơn</strong> bên dưới.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="text-[11.5px] font-semibold text-[#52657a]">
+                    Chọn sản phẩm bên trái để sinh mã QR {posPaymentMethod} tương ứng với tổng tiền hóa đơn.
+                  </p>
+                )}
               </div>
             )}
 

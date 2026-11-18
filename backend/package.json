@@ -4,9 +4,10 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node --test tests/userBackend.test.js tests/fullBackend.test.js",
+    "test": "node --test tests/userBackend.test.js tests/fullBackend.test.js tests/paymentBackend.test.js",
     "test:user": "node --test tests/userBackend.test.js",
-    "test:full": "node --test tests/fullBackend.test.js"
+    "test:full": "node --test tests/fullBackend.test.js",
+    "test:payment": "node --test tests/paymentBackend.test.js"
   },
   "keywords": [],
   "author": "",

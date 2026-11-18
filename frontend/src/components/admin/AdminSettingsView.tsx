@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   MapPin,
   Phone,
@@ -70,6 +70,10 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
   const [draftGateways, setDraftGateways] = useState<PaymentGatewayConfig>(paymentGateways);
   const [draftPermissions, setDraftPermissions] = useState<SharedStaffPermissions>(staffPermissions);
   const [newStaffName, setNewStaffName] = useState('');
+
+  useEffect(() => {
+    setDraftGateways(paymentGateways);
+  }, [paymentGateways]);
   const headerMeta = SETTINGS_HEADER_META[activeTab];
 
   const toggleStaffPermission = (key: keyof SharedStaffPermissions) => {
@@ -351,8 +355,16 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="text-[15px] font-extrabold text-[#17324d]">VNPay QR / ATM</h3>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-bold">
-                      Sandbox đang bật
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        draftGateways.vnpayEnabled
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {draftGateways.vnpayEnabled
+                        ? `${draftGateways.vnpayEnvironment === 'production' ? 'Production' : 'Sandbox'} đang bật`
+                        : 'Đang tạm ngưng'}
                     </span>
                   </div>
                   <p className="text-[12px] text-[#52657a] mt-0.5">
@@ -425,8 +437,16 @@ export const AdminSettingsView: React.FC<AdminSettingsViewProps> = ({
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="text-[15px] font-extrabold text-[#17324d]">Ví điện tử MoMo</h3>
-                    <span className="px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 text-[10px] font-bold">
-                      Sandbox đang bật
+                    <span
+                      className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                        draftGateways.momoEnabled
+                          ? 'bg-emerald-50 text-emerald-700'
+                          : 'bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {draftGateways.momoEnabled
+                        ? `${draftGateways.momoEnvironment === 'production' ? 'Production' : 'Sandbox'} đang bật`
+                        : 'Đang tạm ngưng'}
                     </span>
                   </div>
                   <p className="text-[12px] text-[#52657a] mt-0.5">

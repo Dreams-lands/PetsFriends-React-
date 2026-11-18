@@ -56,6 +56,55 @@ function aggregateQuantitiesByProductId(itemRows = []) {
   return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
 }
 
+/**
+ * Đồng bộ trạng thái thanh toán khi đơn hàng đổi trạng thái (chạy trong cùng SQL Transaction,
+ * TRƯỚC câu lệnh UPDATE OrderStatus để OUTPUT INSERTED.* trả về dữ liệu mới nhất):
+ *  - Hủy đơn đã thu tiền         -> PaymentStatus = refunded, giao dịch success -> refunded
+ *  - Giao thành công đơn COD     -> PaymentStatus = paid + ghi giao dịch thu tiền COD
+ *  - Mở lại đơn đã hoàn tiền     -> PaymentStatus = unpaid (cần thu tiền lại)
+ */
+async function syncPaymentOnStatusChange(transaction, order, nextStatus, actorName = null) {
+  const currentPs = order.PaymentStatus || 'unpaid';
+
+  if (nextStatus === 'cancelled' && order.OrderStatus !== 'cancelled' && currentPs === 'paid') {
+    await new sql.Request(transaction)
+      .input('orderId', sql.Int, order.OrderId)
+      .query(`
+        UPDATE dbo.Orders SET PaymentStatus = N'refunded' WHERE OrderId = @orderId;
+        UPDATE dbo.PaymentTransactions
+        SET Status = N'refunded',
+            Note = LEFT(CONCAT(ISNULL(Note, N''), N' | Hoàn tiền do hủy đơn hàng'), 400),
+            UpdatedAt = SYSUTCDATETIME()
+        WHERE OrderId = @orderId AND Status = N'success';
+      `);
+    return;
+  }
+
+  if (nextStatus === 'completed' && order.PaymentMethod === 'cod' && currentPs !== 'paid') {
+    await new sql.Request(transaction)
+      .input('orderId', sql.Int, order.OrderId)
+      .input('txnRef', sql.NVarChar(60), `${order.OrderCode}-COD-${Date.now()}`)
+      .input('amount', sql.Decimal(18, 0), Number(order.TotalAmount || 0))
+      .input('createdBy', sql.NVarChar(120), actorName)
+      .query(`
+        UPDATE dbo.Orders
+        SET PaymentStatus = N'paid', PaidAt = SYSUTCDATETIME()
+        WHERE OrderId = @orderId;
+        INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
+        VALUES (@orderId, @txnRef, N'cod', @amount, N'success', N'00', N'Thu tiền COD khi giao hàng thành công', @createdBy);
+      `);
+    return;
+  }
+
+  if (order.OrderStatus === 'cancelled' && nextStatus !== 'cancelled' && currentPs === 'refunded') {
+    await new sql.Request(transaction)
+      .input('orderId', sql.Int, order.OrderId)
+      .query(`
+        UPDATE dbo.Orders SET PaymentStatus = N'unpaid', PaidAt = NULL WHERE OrderId = @orderId;
+      `);
+  }
+}
+
 async function attachItemsToOrders(pool, orderRows) {
   if (!Array.isArray(orderRows) || orderRows.length === 0) return [];
 
@@ -352,7 +401,23 @@ async function createOrder(body = {}) {
 
   const pool = await poolPromise;
 
-  // Resolve UserId (explicit userId or automatic phone lookup for POS recognized member)
+  // Online checkout: chặn phương thức thanh toán đang bị Admin tắt trong PaymentGatewayConfigs
+  if (orderSource === 'online') {
+    const gwRes = await pool
+      .request()
+      .input('gw', sql.NVarChar(20), paymentCode)
+      .query('SELECT TOP 1 DisplayName, IsEnabled FROM dbo.PaymentGatewayConfigs WHERE Gateway = @gw');
+    const gwRow = gwRes.recordset[0];
+    if (gwRow && !gwRow.IsEnabled) {
+      throw new AppError(
+        `Phương thức thanh toán "${gwRow.DisplayName}" hiện đang tạm ngưng. Vui lòng chọn phương thức khác.`,
+        400
+      );
+    }
+  }
+
+  // POS tại quầy: thu tiền ngay -> đã thanh toán. Online: chờ thu tiền (COD) hoặc chờ cổng VNPay/MoMo.
+  const initialPaymentStatus = orderSource === 'pos' ? 'paid' : 'unpaid';
   let resolvedUserId = null;
   if (
     body.userId !== undefined &&
@@ -549,22 +614,39 @@ async function createOrder(body = {}) {
       .input('orderSource', sql.NVarChar(20), orderSource)
       .input('totalAmount', sql.Decimal(18, 0), totalAmount)
       .input('staffName', sql.NVarChar(120), staffName)
+      .input('paymentStatus', sql.NVarChar(20), initialPaymentStatus)
       .query(`
         INSERT INTO dbo.Orders (
           OrderCode, UserId, IsGuest, CustomerName, CustomerPhone, CustomerEmail,
           DeliveryMethod, ShippingAddress, PaymentMethod, OrderStatus, OrderSource,
-          TotalAmount, StaffName
+          TotalAmount, StaffName, PaymentStatus, PaidAt
         )
         OUTPUT INSERTED.*
         VALUES (
           @orderCode, @userId, @isGuest, @customerName, @customerPhone, @customerEmail,
           @deliveryMethod, @shippingAddress, @paymentMethod, @orderStatus, @orderSource,
-          @totalAmount, @staffName
+          @totalAmount, @staffName, @paymentStatus,
+          CASE WHEN @paymentStatus = N'paid' THEN SYSUTCDATETIME() ELSE NULL END
         )
       `);
 
     const createdOrderRow = orderInsert.recordset[0];
     const insertedItems = [];
+
+    // 4.1 Đơn POS: ghi nhận giao dịch thu tiền tại quầy vào lịch sử thanh toán
+    if (initialPaymentStatus === 'paid') {
+      await new sql.Request(transaction)
+        .input('orderId', sql.Int, createdOrderRow.OrderId)
+        .input('txnRef', sql.NVarChar(60), `${orderCode}-POS`)
+        .input('gateway', sql.NVarChar(20), paymentCode === 'cod' ? 'cash' : paymentCode)
+        .input('amount', sql.Decimal(18, 0), totalAmount)
+        .input('note', sql.NVarChar(400), paymentCode === 'cod' ? 'Thu tiền mặt tại quầy POS' : `Khách quét mã ${paymentCode.toUpperCase()} tại quầy POS`)
+        .input('createdBy', sql.NVarChar(120), staffName)
+        .query(`
+          INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
+          VALUES (@orderId, @txnRef, @gateway, @amount, N'success', N'00', @note, @createdBy)
+        `);
+    }
 
     // 5. Insert OrderItems
     for (const vItem of validatedItems) {
@@ -604,9 +686,20 @@ async function createOrder(body = {}) {
     await transaction.commit();
     txBegun = false;
 
+    const needsOnlinePayment =
+      orderSource === 'online' && (paymentCode === 'vnpay' || paymentCode === 'momo');
+
     return {
       message: 'Tạo đơn hàng thành công!',
       order: mapOrderRow(createdOrderRow, insertedItems),
+      payment: {
+        required: needsOnlinePayment,
+        method: paymentCode,
+        status: initialPaymentStatus,
+        nextStep: needsOnlinePayment
+          ? `POST /api/payments/${paymentCode}/create`
+          : null,
+      },
     };
   } catch (err) {
     if (txBegun) {
@@ -711,6 +804,8 @@ async function updateOrderStatus(idOrCode, payload = {}) {
           `);
       }
     }
+
+    await syncPaymentOnStatusChange(transaction, prevOrder, nextStatus, staffName);
 
     const updatedRes = await new sql.Request(transaction)
       .input('orderId', sql.Int, prevOrder.OrderId)
@@ -828,6 +923,13 @@ async function cancelOrder(idOrCode, { requester = null, phone = '' } = {}) {
           WHERE ProductId = @pid
         `);
     }
+
+    await syncPaymentOnStatusChange(
+      transaction,
+      order,
+      'cancelled',
+      requester && requester.username ? requester.username : null
+    );
 
     const updatedRes = await new sql.Request(transaction)
       .input('orderId', sql.Int, order.OrderId)
@@ -1338,6 +1440,7 @@ async function getAnalyticsPeriod(params = {}) {
 
 module.exports = {
   attachItemsToOrders,
+  syncPaymentOnStatusChange,
   listOrders,
   lookupGuestOrder,
   getOrderById,

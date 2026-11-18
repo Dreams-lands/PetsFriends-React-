@@ -15,6 +15,7 @@ import {
   ArrowRight,
   Search,
   Sparkles,
+  QrCode,
 } from 'lucide-react';
 import type { ConfirmDialogState } from './ConfirmDialog';
 import type {
@@ -61,6 +62,7 @@ interface AccountPageProps {
   onToggleLike: (id: string) => void;
   onAddToCart: (product: ProductItem, qty?: number) => void;
   onBuyAgain: (order: OrderRecord) => void;
+  onPayOrderQr?: (order: OrderRecord) => void;
   onOpenProduct: (id: string) => void;
   onNavigate: (page: PageId) => void;
   onLogout: () => void;
@@ -87,6 +89,7 @@ export const AccountPage: React.FC<AccountPageProps> = ({
   onToggleLike,
   onAddToCart,
   onBuyAgain,
+  onPayOrderQr,
   onOpenProduct,
   onNavigate,
   onLogout,
@@ -752,11 +755,26 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                             {order.createdAt}
                           </span>
                         </div>
-                        <span
-                          className={`px-3 py-1 rounded-full text-xs font-semibold ${statusMeta.badgeClass}`}
-                        >
-                          {statusMeta.label}
-                        </span>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {order.paymentStatusLabel && (
+                            <span
+                              className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${
+                                order.paymentStatus === 'paid'
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                  : order.paymentStatus === 'failed'
+                                    ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                    : 'bg-amber-50 text-amber-700 border-amber-200'
+                              }`}
+                            >
+                              {order.paymentMethod} · {order.paymentStatusLabel}
+                            </span>
+                          )}
+                          <span
+                            className={`px-3 py-1 rounded-full text-xs font-semibold ${statusMeta.badgeClass}`}
+                          >
+                            {statusMeta.label}
+                          </span>
+                        </div>
                       </div>
 
                       <div className="divide-y divide-[#eef2f7]">
@@ -805,6 +823,23 @@ export const AccountPage: React.FC<AccountPageProps> = ({
                               {formatCurrency(order.totalAmount)}
                             </span>
                           </div>
+                          {onPayOrderQr &&
+                            order.status !== 'cancelled' &&
+                            (order.paymentStatus === 'unpaid' ||
+                              order.paymentStatus === 'failed') &&
+                            (order.paymentMethodCode === 'vnpay' ||
+                              order.paymentMethodCode === 'momo' ||
+                              order.paymentMethod.toLowerCase().includes('vnpay') ||
+                              order.paymentMethod.toLowerCase().includes('momo')) && (
+                              <button
+                                type="button"
+                                onClick={() => onPayOrderQr(order)}
+                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-[#0667d0] hover:bg-[#0558b5] text-white text-xs sm:text-sm font-semibold transition cursor-pointer"
+                              >
+                                <QrCode className="w-4 h-4" />
+                                <span>Quét QR thanh toán</span>
+                              </button>
+                            )}
                           <button
                             type="button"
                             onClick={() => onBuyAgain(order)}

@@ -19,6 +19,8 @@ tags:
     description: Don hang online, ban tai quay POS, quan ly ton kho don hang va thong ke doanh thu
   - name: Spa & Contact
     description: Goi dich vu Spa, dat lich hen, tra cuu/huy lich va tin nhan lien he
+  - name: Payments
+    description: Cau hinh cong thanh toan, VNPay (HMAC-SHA512), MoMo (HMAC-SHA256), xac nhan thu tien, hoan tien va lich su giao dich
 
 components:
   securitySchemes:
@@ -2669,3 +2671,368 @@ paths:
           description: Trang thai khong hop le
         "404":
           description: Khong tim thay tin nhan
+
+  # ==========================================================================
+  # PAYMENTS - Cong thanh toan COD / VNPay / MoMo
+  # ==========================================================================
+  /payment-gateways:
+    get:
+      tags: [Payments]
+      summary: Lay cau hinh cong thanh toan (khoa bi mat duoc che, Admin dung includeSecrets=true de xem day du)
+      parameters:
+        - in: query
+          name: includeSecrets
+          schema:
+            type: boolean
+          description: Chi co hieu luc khi gui kem JWT cua Admin
+      responses:
+        "200":
+          description: Cau hinh cong thanh toan (codEnabled, vnpayEnabled, momoEnabled, enabledMethods, gateways[])
+    put:
+      tags: [Payments]
+      summary: Cap nhat cau hinh cong thanh toan (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                codEnabled: { type: boolean, example: true }
+                codNote: { type: string }
+                vnpayEnabled: { type: boolean, example: true }
+                vnpayTmnCode: { type: string, example: PETHUB01 }
+                vnpayEnvironment: { type: string, enum: [sandbox, production] }
+                vnpayHashSecret: { type: string, description: Gui gia tri da che (co ky tu •) se giu nguyen khoa cu }
+                momoEnabled: { type: boolean, example: true }
+                momoPartnerCode: { type: string, example: MOMO }
+                momoEnvironment: { type: string, enum: [sandbox, production] }
+                momoAccessKey: { type: string }
+                momoSecretKey: { type: string }
+      responses:
+        "200":
+          description: Da luu cau hinh
+        "400":
+          description: Cau hinh khong hop le hoac tat toan bo cong thanh toan
+        "403":
+          description: Khong phai Admin
+
+  /payments/vnpay/create:
+    post:
+      tags: [Payments]
+      summary: Tao URL thanh toan VNPay (ky HMAC-SHA512) cho don hang online chon VNPay
+      description: Khach vang lai can gui dung SDT dat hang; hoi vien gui JWT; Admin/Staff duoc tao cho moi don.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderCode]
+              properties:
+                orderCode: { type: string, example: PH123456 }
+                phone: { type: string, example: "0988111222" }
+                bankCode: { type: string, example: NCB }
+                locale: { type: string, enum: [vn, en] }
+                returnUrl: { type: string, description: Ghi de vnp_ReturnUrl (tuy chon) }
+      responses:
+        "201":
+          description: Tra ve paymentUrl, txnRef, amount, expireAt (15 phut)
+        "400":
+          description: Don da huy / sai phuong thuc / cong dang tat
+        "403":
+          description: Khong dung chu don hang
+        "404":
+          description: Khong tim thay don hang
+        "409":
+          description: Don hang da duoc thanh toan
+
+  /payments/vnpay/return:
+    get:
+      tags: [Payments]
+      summary: Return URL - VNPay chuyen huong trinh duyet ve sau khi thanh toan
+      description: Xac minh chu ky vnp_SecureHash va chot ket qua giao dich (idempotent). Neu cau hinh FRONTEND_URL se redirect ve Frontend kem ?payment=success|failed.
+      parameters:
+        - in: query
+          name: vnp_TxnRef
+          schema: { type: string }
+        - in: query
+          name: vnp_ResponseCode
+          schema: { type: string, example: "00" }
+        - in: query
+          name: vnp_SecureHash
+          schema: { type: string }
+      responses:
+        "200":
+          description: Ket qua thanh toan (success, order, responseCode)
+        "302":
+          description: Chuyen huong ve FRONTEND_URL
+        "400":
+          description: Chu ky khong hop le hoac sai so tien
+        "404":
+          description: Khong tim thay giao dich
+
+  /payments/vnpay/ipn:
+    get:
+      tags: [Payments]
+      summary: IPN - VNPay goi server-to-server de xac nhan giao dich
+      responses:
+        "200":
+          description: "Luon tra { RspCode, Message } - 00 thanh cong, 01 khong tim thay, 02 da xac nhan, 04 sai so tien, 97 sai chu ky, 99 loi khac"
+
+  /payments/momo/create:
+    post:
+      tags: [Payments]
+      summary: Tao yeu cau thanh toan MoMo (captureWallet, ky HMAC-SHA256)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [orderCode]
+              properties:
+                orderCode: { type: string, example: PH123456 }
+                phone: { type: string, example: "0988111222" }
+                redirectUrl: { type: string }
+      responses:
+        "201":
+          description: Tra ve paymentUrl, qrCodeUrl, deeplink
+        "400":
+          description: Don khong hop le / so tien ngoai 1.000 - 50.000.000 VND
+        "403":
+          description: Khong dung chu don hang
+        "409":
+          description: Don hang da duoc thanh toan
+        "502":
+          description: Khong ket noi duoc hoac cong MoMo tu choi
+
+  /payments/momo/return:
+    get:
+      tags: [Payments]
+      summary: Redirect URL - MoMo chuyen huong trinh duyet ve sau khi thanh toan
+      responses:
+        "200":
+          description: Ket qua thanh toan
+        "302":
+          description: Chuyen huong ve FRONTEND_URL
+        "400":
+          description: Chu ky khong hop le
+
+  /payments/momo/ipn:
+    post:
+      tags: [Payments]
+      summary: IPN - MoMo goi server-to-server de xac nhan giao dich
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                partnerCode: { type: string }
+                orderId: { type: string }
+                requestId: { type: string }
+                amount: { type: integer }
+                orderInfo: { type: string }
+                orderType: { type: string }
+                transId: { type: integer }
+                resultCode: { type: integer, example: 0 }
+                message: { type: string }
+                payType: { type: string }
+                responseTime: { type: integer }
+                extraData: { type: string }
+                signature: { type: string }
+      responses:
+        "204":
+          description: Da nhan IPN
+        "400":
+          description: Chu ky khong hop le
+
+  /payments/summary:
+    get:
+      tags: [Payments]
+      summary: Thong ke thu tien (da thu, con no, that bai, hoan tien, theo phuong thuc) - Admin/Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: fromDate
+          schema: { type: string, example: "2026-11-01" }
+        - in: query
+          name: toDate
+          schema: { type: string, example: "2026-11-30" }
+      responses:
+        "200":
+          description: Bao cao thanh toan
+        "403":
+          description: Khong co quyen
+
+  /payments/transactions:
+    get:
+      tags: [Payments]
+      summary: Lich su giao dich thanh toan - Admin/Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: gateway
+          schema: { type: string, enum: [all, vnpay, momo, cod, cash, manual] }
+        - in: query
+          name: status
+          schema: { type: string, enum: [all, pending, success, failed, refunded] }
+        - in: query
+          name: orderCode
+          schema: { type: string }
+        - in: query
+          name: search
+          schema: { type: string }
+        - in: query
+          name: fromDate
+          schema: { type: string }
+        - in: query
+          name: toDate
+          schema: { type: string }
+      responses:
+        "200":
+          description: Danh sach giao dich
+        "400":
+          description: Trang thai loc khong hop le
+        "403":
+          description: Khong co quyen
+
+  /payments/expire-unpaid:
+    post:
+      tags: [Payments]
+      summary: Tu dong huy don online VNPay/MoMo qua han chua thanh toan va hoan ton kho - Admin/Staff
+      security:
+        - bearerAuth: []
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                minutes:
+                  type: integer
+                  minimum: 5
+                  maximum: 10080
+                  example: 30
+      responses:
+        "200":
+          description: Danh sach ma don da huy (expiredCount, orderCodes)
+        "400":
+          description: Thoi gian khong hop le
+
+  /payments/orders/{orderCode}:
+    get:
+      tags: [Payments]
+      summary: Tra cuu trang thai thanh toan & lich su giao dich cua 1 don hang
+      parameters:
+        - in: path
+          name: orderCode
+          required: true
+          schema: { type: string, example: PH261116 }
+        - in: query
+          name: phone
+          schema: { type: string, example: "0907345112" }
+          description: Bat buoc voi khach vang lai (khong gui JWT)
+      responses:
+        "200":
+          description: paymentStatus, canPayOnline, transactions[]
+        "403":
+          description: Khong dung chu don hang
+        "404":
+          description: Khong tim thay don hang
+
+  /payments/orders/{orderCode}/confirm:
+    post:
+      tags: [Payments]
+      summary: Nhan vien xac nhan da thu tien thu cong (tien mat / chuyen khoan) - Admin/Staff
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: orderCode
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                method: { type: string, enum: [cash, cod, vnpay, momo, manual], example: cash }
+                note: { type: string }
+                staffName: { type: string, example: Linh Pham }
+      responses:
+        "200":
+          description: Da xac nhan thu tien
+        "400":
+          description: Don hang da huy
+        "409":
+          description: Don hang da thanh toan
+
+  /payments/orders/{orderCode}/refund:
+    post:
+      tags: [Payments]
+      summary: Ghi nhan hoan tien cho don hang da thanh toan - Admin
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: orderCode
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, example: Khach tra hang }
+      responses:
+        "200":
+          description: Da hoan tien
+        "400":
+          description: Don hang chua thanh toan
+
+  /payments/qr-scan/{txnRef}:
+    get:
+      tags: [Payments]
+      summary: Trang xac nhan quet ma QR thanh toan Sandbox theo ma giao dich
+      parameters:
+        - in: path
+          name: txnRef
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Thong tin giao dich hoac giao dien xac nhan QR
+        "404":
+          description: Khong tim thay giao dich
+
+  /payments/orders/{orderCode}/sandbox-complete:
+    post:
+      tags: [Payments]
+      summary: Xac nhan gia lap quet ma QR VNPay hoac MoMo tren moi truong Sandbox
+      parameters:
+        - in: path
+          name: orderCode
+          required: true
+          schema: { type: string }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phone: { type: string, example: "0909123456" }
+                outcome: { type: string, enum: [success, failed], example: success }
+      responses:
+        "200":
+          description: Da cap nhat ket qua thanh toan QR Sandbox
+        "403":
+          description: Khong du quyen hoac cong dang o che do Production

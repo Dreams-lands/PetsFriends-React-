@@ -57,6 +57,8 @@ export interface AddressRecord {
   isDefault: boolean;
 }
 
+export type PaymentStatus = 'unpaid' | 'paid' | 'failed' | 'refunded';
+
 export interface OrderRecord {
   id: string;
   createdAt: string;
@@ -64,6 +66,10 @@ export interface OrderRecord {
   totalAmount: number;
   shippingAddress: string;
   paymentMethod: string;
+  paymentMethodCode?: PaymentMethodId;
+  paymentStatus?: PaymentStatus;
+  paymentStatusLabel?: string;
+  paidAt?: string | null;
   items: {
     id: string;
     name: string;
