@@ -1,0 +1,21 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node --test tests/userBackend.test.js tests/fullBackend.test.js tests/paymentBackend.test.js",
+    "test:user": "node --test tests/userBackend.test.js",
+    "test:full": "node --test tests/fullBackend.test.js",
+    "test:payment": "node --test tests/paymentBackend.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^4.22.3",
+    "jsonwebtoken": "^9.0.3"
+  }
+}
