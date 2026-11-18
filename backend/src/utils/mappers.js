@@ -221,6 +221,14 @@ function mapAddressRow(row) {
   };
 }
 
+function normalizePhoneDigits(raw) {
+  const digits = String(raw || '').replace(/\D/g, '');
+  if (digits.startsWith('84') && digits.length >= 11) {
+    return `0${digits.slice(2)}`;
+  }
+  return digits;
+}
+
 function mapUserRow(row) {
   return {
     id: row.UserId,
@@ -231,7 +239,8 @@ function mapUserRow(row) {
     email: row.Email,
     phone: row.Phone || '',
     role: row.Role,
-    status: 'active',
+    gender: row.Gender || 'Nam',
+    status: row.Status || 'active',
     createdAt: row.CreatedAt,
   };
 }
@@ -243,6 +252,7 @@ module.exports = {
   normalizePaymentMethodCode,
   formatPaymentMethodLabel,
   parseMoneyNumber,
+  normalizePhoneDigits,
   mapReviewRow,
   mapProductRow,
   mapOrderRow,

@@ -10,35 +10,474 @@ servers:
 
 tags:
   - name: System
-    description: Kiem tra he thong
+    description: Kiem tra he thong va ket noi CSDL
   - name: Auth & Users
-    description: Dang nhap, dang ky, ho so va so dia chi
+    description: Dang nhap, dang ky, JWT, phan quyen RBAC, ho so, so dia chi, yeu thich va nhan su
   - name: Products & Reviews
-    description: Danh muc, san pham, ton kho va danh gia
+    description: Danh muc, san pham, ton kho, upload anh va danh gia san pham
   - name: Orders & POS
-    description: Don hang online, ban tai quay POS va doanh thu
+    description: Don hang online, ban tai quay POS, quan ly ton kho don hang va thong ke doanh thu
   - name: Spa & Contact
-    description: Goi dich vu Spa, dat lich hen va tin nhan lien he
+    description: Goi dich vu Spa, dat lich hen, tra cuu/huy lich va tin nhan lien he
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Nhap JWT token nhan duoc tu POST /auth/login hoac POST /auth/register
+
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        message:
+          type: string
+          example: Du lieu gui len khong hop le.
+
+    User:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        userId:
+          type: integer
+          example: 1
+        username:
+          type: string
+          nullable: true
+          example: admin
+        name:
+          type: string
+          example: Trinh Anh Khoa
+        fullName:
+          type: string
+          example: Trinh Anh Khoa
+        email:
+          type: string
+          example: admin@pethub.vn
+        phone:
+          type: string
+          example: "0909123456"
+        role:
+          type: string
+          enum: [customer, staff, admin]
+          example: customer
+        gender:
+          type: string
+          enum: [Nam, Nu, Khac]
+          example: Nam
+        status:
+          type: string
+          enum: [active, inactive, banned]
+          example: active
+        createdAt:
+          type: string
+          format: date-time
+
+    AddressRecord:
+      type: object
+      properties:
+        id:
+          type: string
+          example: "1"
+        addressId:
+          type: integer
+          example: 1
+        userId:
+          type: integer
+          example: 3
+        label:
+          type: string
+          example: Nha rieng
+        recipient:
+          type: string
+          example: Trinh Anh Khoa
+        phone:
+          type: string
+          example: "0909123456"
+        address:
+          type: string
+          example: 128 Nguyen Hue, Quan 1, TP.HCM
+        isDefault:
+          type: boolean
+          example: true
+
+    StaffPermissions:
+      type: object
+      properties:
+        ordersManage:
+          type: boolean
+          example: true
+        ordersInvoices:
+          type: boolean
+          example: true
+        pos:
+          type: boolean
+          example: true
+        appointments:
+          type: boolean
+          example: true
+        inventoryView:
+          type: boolean
+          example: true
+        inventoryEdit:
+          type: boolean
+          example: false
+        analytics:
+          type: boolean
+          example: false
+        settings:
+          type: boolean
+          example: false
+
+    Category:
+      type: object
+      properties:
+        id:
+          type: string
+          example: food
+        categoryCode:
+          type: string
+          example: food
+        label:
+          type: string
+          example: Dinh duong & Pate
+        name:
+          type: string
+          example: Dinh duong & Pate
+        productCount:
+          type: integer
+          example: 2
+
+    ProductReview:
+      type: object
+      properties:
+        id:
+          type: string
+          example: rev-1
+        reviewId:
+          type: integer
+          example: 1
+        productId:
+          type: string
+          example: prod-rc-mini
+        userId:
+          type: integer
+          nullable: true
+          example: 3
+        author:
+          type: string
+          example: Minh Thu
+        petTag:
+          type: string
+          example: Nuoi Poodle
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+          example: 5
+        date:
+          type: string
+          example: "18/11/2026"
+        verified:
+          type: boolean
+          example: true
+        comment:
+          type: string
+          example: Hat rat thom, be an ngon mieng.
+
+    ProductItem:
+      type: object
+      properties:
+        id:
+          type: string
+          example: prod-rc-mini
+        productId:
+          type: string
+          example: prod-rc-mini
+        brand:
+          type: string
+          example: ROYAL CANIN
+        name:
+          type: string
+          example: Hat dinh duong cho cho giong nho Mini Adult
+        shortDesc:
+          type: string
+          example: Ho tro tieu hoa va long muot.
+        category:
+          type: string
+          example: food
+        subType:
+          type: string
+          example: Dinh duong & Hat kho
+        petType:
+          type: string
+          enum: [dog, cat, both]
+          example: dog
+        sizes:
+          type: array
+          items:
+            type: string
+          example: ["2 kg", "4 kg", "8 kg"]
+        priceNum:
+          type: number
+          example: 389000
+        price:
+          type: string
+          example: "389.000₫"
+        originalPriceNum:
+          type: number
+          nullable: true
+          example: 489000
+        originalPrice:
+          type: string
+          nullable: true
+          example: "489.000₫"
+        image:
+          type: string
+          example: /images/prod-chicken-pate.jpg
+        stockCount:
+          type: integer
+          example: 22
+        isFeatured:
+          type: boolean
+          example: true
+        isActive:
+          type: boolean
+          example: true
+        reviews:
+          type: array
+          items:
+            $ref: "#/components/schemas/ProductReview"
+
+    OrderItem:
+      type: object
+      properties:
+        id:
+          type: string
+          example: prod-rc-mini
+        orderItemId:
+          type: integer
+          example: 1
+        productId:
+          type: string
+          nullable: true
+          example: prod-rc-mini
+        name:
+          type: string
+          example: Hat dinh duong Mini Adult
+        image:
+          type: string
+          example: /images/prod-chicken-pate.jpg
+        price:
+          type: number
+          example: 389000
+        quantity:
+          type: integer
+          example: 1
+        variant:
+          type: string
+          example: "2 kg"
+
+    Order:
+      type: object
+      properties:
+        id:
+          type: string
+          example: PH261116
+        orderId:
+          type: integer
+          example: 1
+        orderCode:
+          type: string
+          example: PH261116
+        userId:
+          type: integer
+          nullable: true
+          example: null
+        isGuest:
+          type: boolean
+          example: true
+        status:
+          type: string
+          enum: [pending, shipping, completed, cancelled]
+          example: pending
+        orderSource:
+          type: string
+          enum: [online, pos]
+          example: online
+        totalAmount:
+          type: number
+          example: 389000
+        deliveryMethod:
+          type: string
+          enum: [delivery, pickup]
+          example: delivery
+        shippingAddress:
+          type: string
+          example: 128 Nguyen Trai, Quan 1, TP.HCM
+        paymentMethodCode:
+          type: string
+          enum: [vnpay, momo, cod]
+          example: cod
+        customerName:
+          type: string
+          example: Ho Minh Tuan
+        customerPhone:
+          type: string
+          example: "0907345112"
+        staffName:
+          type: string
+          nullable: true
+          example: Ha Le
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/OrderItem"
+
+    SpaPackage:
+      type: object
+      properties:
+        id:
+          type: string
+          example: pkg-3
+        packageId:
+          type: string
+          example: pkg-3
+        name:
+          type: string
+          example: Cham soc Toan dien 7 Buoc
+        desc:
+          type: string
+          example: Tron goi tam, massage, cat tia, cat mong.
+        description:
+          type: string
+          example: Tron goi tam, massage, cat tia, cat mong.
+        price:
+          type: number
+          example: 390000
+        priceStr:
+          type: string
+          example: "390.000₫"
+        duration:
+          type: string
+          example: 90 phut
+        isPopular:
+          type: boolean
+          example: true
+
+    ServiceBooking:
+      type: object
+      properties:
+        id:
+          type: string
+          example: BK261116
+        bookingId:
+          type: integer
+          example: 1
+        bookingCode:
+          type: string
+          example: BK261116
+        userId:
+          type: integer
+          nullable: true
+        packageId:
+          type: string
+          nullable: true
+          example: pkg-1
+        serviceName:
+          type: string
+          example: Tam thao moc & Thu gian
+        petName:
+          type: string
+          example: Coco (Pomeranian)
+        date:
+          type: string
+          example: "2026-11-18"
+        timeSlot:
+          type: string
+          example: 09:00 Sang
+        price:
+          type: number
+          example: 180000
+        status:
+          type: string
+          enum: [upcoming, completed, cancelled]
+          example: upcoming
+        customerName:
+          type: string
+          example: Le Thao Vy
+        customerPhone:
+          type: string
+          example: "0935678920"
+        staffName:
+          type: string
+          nullable: true
+          example: Linh Pham
+        note:
+          type: string
+          nullable: true
+
+    ContactMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+          example: 1
+        messageId:
+          type: integer
+          example: 1
+        senderName:
+          type: string
+          example: Nguyen Minh Anh
+        senderPhone:
+          type: string
+          example: "0901234567"
+        topic:
+          type: string
+          example: Tu van san pham & dinh duong
+        message:
+          type: string
+          example: Nho shop tu van hat cho Poodle 2 tuoi.
+        status:
+          type: string
+          enum: [new, replied, closed]
+          example: new
+        createdAt:
+          type: string
+          format: date-time
 
 paths:
+  # ==========================================================================
+  # SYSTEM
+  # ==========================================================================
   /health:
     get:
       tags: [System]
-      summary: Kiem tra ket noi SQL Server
+      summary: Kiem tra trang thai ket noi API va SQL Server QLThuCung
       responses:
         "200":
-          description: Thanh cong
+          description: Ket noi he thong hoat dong tot
+        "500":
+          description: Loi ket noi CSDL
 
+  # ==========================================================================
+  # AUTH & USERS (29 Operations)
+  # ==========================================================================
   /auth/login:
     post:
       tags: [Auth & Users]
-      summary: Dang nhap (Email, Username hoac SDT)
+      summary: Dang nhap bang Email, Username hoac SDT (tra ve JWT token)
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [identifier, password]
               properties:
                 identifier:
                   type: string
@@ -49,19 +488,30 @@ paths:
       responses:
         "200":
           description: Dang nhap thanh cong
+        "401":
+          description: Sai thong tin dang nhap
+        "403":
+          description: Tai khoan bi khoa hoac tam ngung
 
   /auth/register:
     post:
       tags: [Auth & Users]
-      summary: Dang ky tai khoan hoi vien moi
+      summary: Dang ky tai khoan hoi vien moi (ma hoa mat khau bcrypt)
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [email, password]
               properties:
+                username:
+                  type: string
+                  example: minhanh99
                 fullName:
+                  type: string
+                  example: Nguyen Minh Anh
+                name:
                   type: string
                   example: Nguyen Minh Anh
                 email:
@@ -73,22 +523,138 @@ paths:
                 password:
                   type: string
                   example: "123456"
+                gender:
+                  type: string
+                  example: Nu
+                address:
+                  type: string
+                  example: 128 Nguyen Hue, Quan 1, TP.HCM
       responses:
         "201":
           description: Tao tai khoan thanh cong
+        "400":
+          description: Thong tin khong hop le
+        "409":
+          description: Email, username hoac SDT da ton tai
+
+  /auth/me:
+    get:
+      tags: [Auth & Users]
+      summary: Lay ho so nguoi dung hien tai tu Bearer JWT token
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Thanh cong
+        "401":
+          description: Chua dang nhap hoac token khong hop le
+
+  /auth/change-password:
+    put:
+      tags: [Auth & Users]
+      summary: Doi mat khau cho tai khoan dang dang nhap
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword:
+                  type: string
+                  example: "123456"
+                newPassword:
+                  type: string
+                  example: NewPass@123
+      responses:
+        "200":
+          description: Doi mat khau thanh cong
+        "400":
+          description: Mat khau hien tai sai hoac mat khau moi ngan hon 6 ky tu
+        "401":
+          description: Chua dang nhap
 
   /users:
     get:
       tags: [Auth & Users]
-      summary: Lay danh sach tat ca nguoi dung
+      summary: Lay danh sach nguoi dung (ho tro loc search, role, status)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: search
+          schema:
+            type: string
+        - in: query
+          name: role
+          schema:
+            type: string
+            enum: [customer, staff, admin]
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [active, inactive, banned]
       responses:
         "200":
           description: Thanh cong
+    post:
+      tags: [Auth & Users]
+      summary: Tao nguoi dung moi boi Quan tri vien (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                username:
+                  type: string
+                  example: staff02
+                fullName:
+                  type: string
+                  example: Tran Thu Ha
+                name:
+                  type: string
+                  example: Tran Thu Ha
+                email:
+                  type: string
+                  example: thuha@pethub.vn
+                phone:
+                  type: string
+                  example: "0908111222"
+                password:
+                  type: string
+                  example: PetsFriend@123
+                role:
+                  type: string
+                  example: staff
+                status:
+                  type: string
+                  example: active
+                gender:
+                  type: string
+                  example: Nu
+      responses:
+        "201":
+          description: Tao nguoi dung thanh cong
+        "403":
+          description: Khong co quyen Admin
+        "409":
+          description: Trung email hoac username
 
   /users/lookup-phone:
     get:
       tags: [Auth & Users]
       summary: Tra cuu nhanh hoi vien bang SDT tai quay POS
+      security:
+        - bearerAuth: []
       parameters:
         - in: query
           name: phone
@@ -99,11 +665,152 @@ paths:
       responses:
         "200":
           description: Tim thay hoi vien
+        "404":
+          description: Khong tim thay hoi vien khop SDT
+
+  /users/{id}:
+    get:
+      tags: [Auth & Users]
+      summary: Lay thong tin chi tiet mot nguoi dung theo ID
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay nguoi dung
+    put:
+      tags: [Auth & Users]
+      summary: Cap nhat toan bo hoac mot phan thong tin nguoi dung (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username:
+                  type: string
+                fullName:
+                  type: string
+                name:
+                  type: string
+                email:
+                  type: string
+                phone:
+                  type: string
+                password:
+                  type: string
+                role:
+                  type: string
+                  enum: [customer, staff, admin]
+                status:
+                  type: string
+                  enum: [active, inactive, banned]
+                gender:
+                  type: string
+      responses:
+        "200":
+          description: Cap nhat thanh cong
+        "400":
+          description: Du lieu khong hop le hoac ha quyen Admin duy nhat
+        "404":
+          description: Khong tim thay nguoi dung
+    delete:
+      tags: [Auth & Users]
+      summary: Xoa nguoi dung khoi he thong (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Xoa thanh cong
+        "400":
+          description: Khong the tu xoa chinh minh hoac Admin cuoi cung
+        "404":
+          description: Khong tim thay nguoi dung
+
+  /users/{id}/role:
+    patch:
+      tags: [Auth & Users]
+      summary: Thay doi vai tro nguoi dung (customer, staff, admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role:
+                  type: string
+                  enum: [customer, staff, admin]
+                  example: staff
+      responses:
+        "200":
+          description: Cap nhat vai tro thanh cong
+
+  /users/{id}/status:
+    patch:
+      tags: [Auth & Users]
+      summary: Thay doi trang thai tai khoan (active, inactive, banned)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [active, inactive, banned]
+                  example: active
+      responses:
+        "200":
+          description: Cap nhat trang thai thanh cong
 
   /users/{id}/profile:
     put:
       tags: [Auth & Users]
-      summary: Cap nhat ho so ca nhan
+      summary: Cap nhat ho so ca nhan (name, email, phone, gender)
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
@@ -119,18 +826,31 @@ paths:
               properties:
                 name:
                   type: string
+                  example: Trinh Anh Khoa
+                fullName:
+                  type: string
+                  example: Trinh Anh Khoa
                 email:
                   type: string
+                  example: khoa.trinh@pethub.vn
                 phone:
                   type: string
+                  example: "0909123456"
+                gender:
+                  type: string
+                  example: Nam
       responses:
         "200":
           description: Cap nhat thanh cong
+        "403":
+          description: Khong co quyen sua ho so nguoi khac
 
   /users/{id}/password:
     put:
       tags: [Auth & Users]
-      summary: Doi mat khau tai khoan
+      summary: Doi mat khau tai khoan theo ID nguoi dung
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
@@ -143,6 +863,7 @@ paths:
           application/json:
             schema:
               type: object
+              required: [currentPassword, newPassword]
               properties:
                 currentPassword:
                   type: string
@@ -151,11 +872,25 @@ paths:
       responses:
         "200":
           description: Doi mat khau thanh cong
+        "400":
+          description: Mat khau hien tai khong chinh xac
+
+  /user-addresses:
+    get:
+      tags: [Auth & Users]
+      summary: Lay toan bo danh sach dia chi nhan hang tren he thong (Admin/Staff)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Thanh cong
 
   /users/{userId}/addresses:
     get:
       tags: [Auth & Users]
-      summary: Lay so dia chi nhan hang cua nguoi dung
+      summary: Lay so dia chi nhan hang cua mot nguoi dung
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: userId
@@ -167,7 +902,9 @@ paths:
           description: Thanh cong
     post:
       tags: [Auth & Users]
-      summary: Them dia chi nhan hang moi
+      summary: Them dia chi nhan hang moi cho nguoi dung
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: userId
@@ -180,6 +917,7 @@ paths:
           application/json:
             schema:
               type: object
+              required: [recipient, phone, address]
               properties:
                 label:
                   type: string
@@ -199,19 +937,366 @@ paths:
       responses:
         "201":
           description: Da them dia chi
+        "404":
+          description: Khong tim thay nguoi dung
 
-  /categories:
+  /users/{userId}/addresses/{addressId}:
+    put:
+      tags: [Auth & Users]
+      summary: Cap nhat dia chi nhan hang cua nguoi dung
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: addressId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                label:
+                  type: string
+                recipient:
+                  type: string
+                phone:
+                  type: string
+                address:
+                  type: string
+                isDefault:
+                  type: boolean
+      responses:
+        "200":
+          description: Cap nhat thanh cong
+        "404":
+          description: Khong tim thay dia chi
+    delete:
+      tags: [Auth & Users]
+      summary: Xoa dia chi nhan hang (tu dong gan mac dinh cho dia chi con lai neu xoa dia chi mac dinh)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: addressId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Xoa dia chi thanh cong
+        "404":
+          description: Khong tim thay dia chi
+
+  /users/{userId}/addresses/{addressId}/default:
+    patch:
+      tags: [Auth & Users]
+      summary: Dat mot dia chi lam dia chi nhan hang mac dinh
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: addressId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Da dat lam mac dinh
+        "404":
+          description: Khong tim thay dia chi
+
+  /users/{userId}/wishlist:
     get:
-      tags: [Products & Reviews]
-      summary: Lay danh sach danh muc san pham
+      tags: [Auth & Users]
+      summary: Lay danh sach san pham yeu thich cua nguoi dung
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
       responses:
         "200":
           description: Thanh cong
+    post:
+      tags: [Auth & Users]
+      summary: Them san pham vao danh sach yeu thich
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [productId]
+              properties:
+                productId:
+                  type: string
+                  example: prod-rc-mini
+      responses:
+        "201":
+          description: Da them vao danh sach yeu thich
+        "404":
+          description: Khong tim thay nguoi dung hoac san pham
+
+  /users/{userId}/wishlist/{productId}:
+    delete:
+      tags: [Auth & Users]
+      summary: Xoa san pham khoi danh sach yeu thich
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: userId
+          required: true
+          schema:
+            type: integer
+        - in: path
+          name: productId
+          required: true
+          schema:
+            type: string
+            example: prod-rc-mini
+      responses:
+        "200":
+          description: Da xoa khoi danh sach yeu thich
+
+  /staff-roster:
+    get:
+      tags: [Auth & Users]
+      summary: Lay danh sach nhan vien truc quay & Spa
+      responses:
+        "200":
+          description: Thanh cong
+    put:
+      tags: [Auth & Users]
+      summary: Thay the toan bo danh sach nhan vien truc (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                staffRoster:
+                  type: array
+                  items:
+                    type: string
+                  example: ["Linh Pham", "Ha Le", "Mai Nguyen", "An Tran"]
+      responses:
+        "200":
+          description: Cap nhat danh sach thanh cong
+    post:
+      tags: [Auth & Users]
+      summary: Them mot nhan vien truc moi vao danh sach (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [staffName]
+              properties:
+                staffName:
+                  type: string
+                  example: Bao Tran
+      responses:
+        "201":
+          description: Them nhan vien thanh cong
+        "409":
+          description: Nhan vien da ton tai trong danh sach
+
+  /staff-roster/{name}:
+    delete:
+      tags: [Auth & Users]
+      summary: Xoa mot nhan vien khoi danh sach truc (giu toi thieu 1 nhan vien)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: name
+          required: true
+          schema:
+            type: string
+            example: Bao Tran
+      responses:
+        "200":
+          description: Da xoa nhan vien khoi danh sach
+        "400":
+          description: Khong the xoa nhan vien cuoi cung
+        "404":
+          description: Khong tim thay nhan vien
+
+  /staff-permissions:
+    get:
+      tags: [Auth & Users]
+      summary: Lay cau hinh phan quyen chuc nang cho vai tro Staff
+      responses:
+        "200":
+          description: Thanh cong
+    put:
+      tags: [Auth & Users]
+      summary: Cap nhat phan quyen chuc nang cho vai tro Staff (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                permissions:
+                  $ref: "#/components/schemas/StaffPermissions"
+      responses:
+        "200":
+          description: Da luu phan quyen nhan vien
+
+  # ==========================================================================
+  # PRODUCTS & REVIEWS
+  # ==========================================================================
+  /categories:
+    get:
+      tags: [Products & Reviews]
+      summary: Lay danh sach danh muc san pham kem so luong san pham dang kinh doanh
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Products & Reviews]
+      summary: Tao danh muc san pham moi (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [categoryCode, name]
+              properties:
+                id:
+                  type: string
+                  example: toys
+                categoryCode:
+                  type: string
+                  example: toys
+                name:
+                  type: string
+                  example: Do choi thu cung
+                label:
+                  type: string
+                  example: Do choi thu cung
+      responses:
+        "201":
+          description: Tao danh muc thanh cong
+        "400":
+          description: Thieu ma hoac ten danh muc
+        "409":
+          description: Ma danh muc da ton tai
+
+  /categories/{code}:
+    get:
+      tags: [Products & Reviews]
+      summary: Xem chi tiet mot danh muc theo ma danh muc
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema:
+            type: string
+            example: food
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay danh muc
+    put:
+      tags: [Products & Reviews]
+      summary: Cap nhat ten danh muc san pham (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema:
+            type: string
+            example: food
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  example: Dinh duong & Hat cao cap
+                label:
+                  type: string
+      responses:
+        "200":
+          description: Cap nhat thanh cong
+        "404":
+          description: Khong tim thay danh muc
+    delete:
+      tags: [Products & Reviews]
+      summary: Xoa danh muc rong (chan 409 neu danh muc dang chua san pham)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: code
+          required: true
+          schema:
+            type: string
+            example: toys
+      responses:
+        "200":
+          description: Da xoa danh muc
+        "404":
+          description: Khong tim thay danh muc
+        "409":
+          description: Danh muc dang chua san pham, khong the xoa
 
   /products:
     get:
       tags: [Products & Reviews]
-      summary: Lay danh sach san pham (ho tro loc category, petType, promoOnly, search, sort)
+      summary: Lay danh sach san pham (loc category, petType, subType, gia, promoOnly, featured, lowStock, search, sort)
       parameters:
         - in: query
           name: category
@@ -221,20 +1306,177 @@ paths:
           name: petType
           schema:
             type: string
+            enum: [all, dog, cat, both]
+        - in: query
+          name: subType
+          schema:
+            type: string
+        - in: query
+          name: minPrice
+          schema:
+            type: number
+        - in: query
+          name: maxPrice
+          schema:
+            type: number
         - in: query
           name: promoOnly
           schema:
             type: string
+            enum: ["true", "false"]
+        - in: query
+          name: featured
+          schema:
+            type: string
+            enum: ["true", "false"]
+        - in: query
+          name: lowStock
+          schema:
+            type: string
+            enum: ["true", "false"]
         - in: query
           name: search
           schema:
             type: string
+        - in: query
+          name: sort
+          schema:
+            type: string
+            enum: [popular, price-asc, price-desc, rating, newest]
+        - in: query
+          name: includeInactive
+          schema:
+            type: string
+            enum: ["true", "false"]
       responses:
         "200":
           description: Thanh cong
     post:
       tags: [Products & Reviews]
       summary: Them san pham moi vao kho (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, priceNum]
+              properties:
+                id:
+                  type: string
+                  example: prod-new-01
+                productId:
+                  type: string
+                  example: prod-new-01
+                name:
+                  type: string
+                  example: Hat huu co ca hoi cho meo
+                brand:
+                  type: string
+                  example: PETSFRIEND ORGANIC
+                shortDesc:
+                  type: string
+                category:
+                  type: string
+                  example: food
+                subType:
+                  type: string
+                petType:
+                  type: string
+                  enum: [dog, cat, both]
+                  example: cat
+                sizes:
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items:
+                        type: string
+                priceNum:
+                  type: number
+                  example: 250000
+                originalPriceNum:
+                  type: number
+                  nullable: true
+                  example: 300000
+                stockCount:
+                  type: integer
+                  example: 30
+                image:
+                  type: string
+                  example: /images/prod-ceramic-bowl.jpg
+                isFeatured:
+                  type: boolean
+                  example: false
+      responses:
+        "201":
+          description: Da tao san pham
+        "400":
+          description: Du lieu hoac danh muc khong hop le
+        "409":
+          description: Ma SKU san pham da ton tai
+
+  /products/promotions:
+    get:
+      tags: [Products & Reviews]
+      summary: Lay danh sach san pham dang giam gia khuyen mai
+      responses:
+        "200":
+          description: Thanh cong
+
+  /products/featured:
+    get:
+      tags: [Products & Reviews]
+      summary: Lay danh sach san pham noi bat ban chay
+      responses:
+        "200":
+          description: Thanh cong
+
+  /products/low-stock:
+    get:
+      tags: [Products & Reviews]
+      summary: Lay danh sach san pham sap het ton kho (Admin/Staff)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: threshold
+          schema:
+            type: integer
+            default: 15
+      responses:
+        "200":
+          description: Thanh cong
+
+  /products/{id}:
+    get:
+      tags: [Products & Reviews]
+      summary: Xem chi tiet mot san pham kem danh sach danh gia
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: prod-rc-mini
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay san pham
+    put:
+      tags: [Products & Reviews]
+      summary: Cap nhat toan phan hoac mot phan thong tin san pham (giu nguyen truong khong gui len)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: prod-rc-mini
       requestBody:
         required: true
         content:
@@ -246,31 +1488,111 @@ paths:
                   type: string
                 brand:
                   type: string
+                shortDesc:
+                  type: string
                 category:
                   type: string
-                  example: food
                 subType:
                   type: string
                 petType:
                   type: string
-                  example: both
+                sizes:
+                  oneOf:
+                    - type: string
+                    - type: array
+                      items:
+                        type: string
                 priceNum:
                   type: number
-                  example: 250000
+                originalPriceNum:
+                  type: number
+                  nullable: true
                 stockCount:
                   type: integer
-                  example: 30
                 image:
                   type: string
-                  example: /images/prod-ceramic-bowl.jpg
+                isFeatured:
+                  type: boolean
+                isActive:
+                  type: boolean
       responses:
-        "201":
-          description: Da tao san pham
+        "200":
+          description: Da cap nhat san pham
+        "404":
+          description: Khong tim thay san pham
+    delete:
+      tags: [Products & Reviews]
+      summary: An (xoa mem IsActive = 0) san pham khoi danh muc cua hang (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Da xoa mem san pham
+        "404":
+          description: Khong tim thay san pham
 
-  /products/{id}:
+  /products/{id}/stock:
+    patch:
+      tags: [Products & Reviews]
+      summary: Dieu chinh ton kho tuyet doi (stockCount) hoac cong/tru tuong doi (delta)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: prod-rc-mini
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                stockCount:
+                  type: integer
+                  example: 25
+                delta:
+                  type: integer
+                  example: -2
+      responses:
+        "200":
+          description: Cap nhat ton kho thanh cong
+        "400":
+          description: Ton kho sau dieu chinh am hoac thieu tham so
+        "404":
+          description: Khong tim thay san pham
+
+  /products/{id}/restore:
+    patch:
+      tags: [Products & Reviews]
+      summary: Khoi phuc san pham da an (IsActive = 1) tro lai cua hang (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Da khoi phuc san pham
+        "404":
+          description: Khong tim thay san pham
+
+  /products/{id}/reviews:
     get:
       tags: [Products & Reviews]
-      summary: Xem chi tiet 1 san pham va danh gia
+      summary: Lay danh sach danh gia cua mot san pham
       parameters:
         - in: path
           name: id
@@ -281,41 +1603,11 @@ paths:
       responses:
         "200":
           description: Thanh cong
-    put:
-      tags: [Products & Reviews]
-      summary: Cap nhat san pham (Admin)
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-      responses:
-        "200":
-          description: Da cap nhat
-    delete:
-      tags: [Products & Reviews]
-      summary: Xoa san pham khoi cua hang (Admin)
-      parameters:
-        - in: path
-          name: id
-          required: true
-          schema:
-            type: string
-      responses:
-        "200":
-          description: Da xoa
-
-  /products/{id}/reviews:
+        "404":
+          description: Khong tim thay san pham
     post:
       tags: [Products & Reviews]
-      summary: Gui danh gia cho san pham
+      summary: Gui danh gia moi cho san pham
       parameters:
         - in: path
           name: id
@@ -329,6 +1621,7 @@ paths:
           application/json:
             schema:
               type: object
+              required: [comment]
               properties:
                 author:
                   type: string
@@ -338,6 +1631,8 @@ paths:
                   example: Nuoi Poodle
                 rating:
                   type: integer
+                  minimum: 1
+                  maximum: 5
                   example: 5
                 comment:
                   type: string
@@ -345,11 +1640,155 @@ paths:
       responses:
         "201":
           description: Da luu danh gia
+        "400":
+          description: Noi dung danh gia rong
+        "404":
+          description: Khong tim thay san pham
 
+  /product-reviews:
+    get:
+      tags: [Products & Reviews]
+      summary: Lay danh sach toan bo danh gia san pham (ho tro loc productId, rating)
+      parameters:
+        - in: query
+          name: productId
+          schema:
+            type: string
+        - in: query
+          name: rating
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Thanh cong
+
+  /product-reviews/{reviewId}:
+    put:
+      tags: [Products & Reviews]
+      summary: Chinh sua noi dung hoac so sao danh gia san pham
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                comment:
+                  type: string
+                petTag:
+                  type: string
+                author:
+                  type: string
+      responses:
+        "200":
+          description: Cap nhat danh gia thanh cong
+        "403":
+          description: Khong co quyen sua danh gia cua nguoi khac
+        "404":
+          description: Khong tim thay danh gia
+    delete:
+      tags: [Products & Reviews]
+      summary: Xoa danh gia san pham (Tac gia hoac Admin/Staff)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: reviewId
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Da xoa danh gia
+        "403":
+          description: Khong co quyen xoa
+        "404":
+          description: Khong tim thay danh gia
+
+  /upload:
+    post:
+      tags: [Products & Reviews]
+      summary: Tai anh san pham len may chu (multipart/form-data hoac base64 JSON, toi da 5MB)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                image:
+                  type: string
+                  format: binary
+                file:
+                  type: string
+                  format: binary
+          application/json:
+            schema:
+              type: object
+              required: [filename, dataBase64]
+              properties:
+                filename:
+                  type: string
+                  example: product-photo.png
+                dataBase64:
+                  type: string
+      responses:
+        "201":
+          description: Tai anh thanh cong, tra ve imageUrl (/uploads/products/...)
+        "400":
+          description: Dinh dang tep khong hop le hoac dung luong vuot qua 5MB
+
+  /products/upload-image:
+    post:
+      tags: [Products & Reviews]
+      summary: Alias tai anh san pham len may chu (Admin/Staff)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                image:
+                  type: string
+                  format: binary
+          application/json:
+            schema:
+              type: object
+              properties:
+                filename:
+                  type: string
+                dataBase64:
+                  type: string
+      responses:
+        "201":
+          description: Tai anh thanh cong
+        "400":
+          description: Dinh dang tep khong hop le
+
+  # ==========================================================================
+  # ORDERS & POS
+  # ==========================================================================
   /orders:
     get:
       tags: [Orders & POS]
-      summary: Lay danh sach don hang kem san pham
+      summary: Lay danh sach don hang kem san pham (loc userId, status, source, paymentMethod, staffName, ngay, search)
       parameters:
         - in: query
           name: userId
@@ -359,41 +1798,86 @@ paths:
           name: status
           schema:
             type: string
+            enum: [all, pending, shipping, completed, cancelled]
+        - in: query
+          name: source
+          schema:
+            type: string
+            enum: [all, online, pos]
+        - in: query
+          name: paymentMethod
+          schema:
+            type: string
+            enum: [all, vnpay, momo, cod]
+        - in: query
+          name: staffName
+          schema:
+            type: string
+        - in: query
+          name: fromDate
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: toDate
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: search
+          schema:
+            type: string
       responses:
         "200":
           description: Thanh cong
     post:
       tags: [Orders & POS]
-      summary: Tao don hang moi (Online hoac POS, tu dong tru ton kho)
+      summary: Tao don hang moi (Online hoac POS, khoa hang UPDLOCK chong am kho & chong sua gia)
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [customerPhone, items]
               properties:
+                orderCode:
+                  type: string
+                userId:
+                  type: integer
+                  nullable: true
+                isGuest:
+                  type: boolean
                 customerName:
                   type: string
                   example: Ho Minh Tuan
                 customerPhone:
                   type: string
                   example: "0907345112"
+                customerEmail:
+                  type: string
                 deliveryMethod:
                   type: string
+                  enum: [delivery, pickup]
                   example: delivery
                 shippingAddress:
                   type: string
                   example: 128 Nguyen Trai, Quan 1, TP.HCM
                 paymentMethod:
                   type: string
+                  enum: [vnpay, momo, cod]
                   example: vnpay
                 orderSource:
                   type: string
+                  enum: [online, pos]
                   example: online
+                staffName:
+                  type: string
                 items:
                   type: array
                   items:
                     type: object
+                    required: [quantity]
                     properties:
                       productId:
                         type: string
@@ -410,14 +1894,21 @@ paths:
                       quantity:
                         type: integer
                         example: 1
+                      variant:
+                        type: string
+                        example: "2 kg"
       responses:
         "201":
           description: Dat hang thanh cong
+        "400":
+          description: Vuot qua ton kho, san pham ngung kinh doanh hoac du lieu khong hop le
+        "409":
+          description: Ma don hang da ton tai
 
   /orders/lookup:
     get:
       tags: [Orders & POS]
-      summary: Tra cuu don hang khach vang lai theo SDT va Ma don
+      summary: Tra cuu don hang khach vang lai theo SDT (chuan hoa) va Ma don hang
       parameters:
         - in: query
           name: phone
@@ -434,11 +1925,68 @@ paths:
       responses:
         "200":
           description: Tim thay don hang
+        "400":
+          description: Thieu SDT hoac Ma don hang
+        "404":
+          description: Khong tim thay don hang khop thong tin
+
+  /orders/{id}:
+    get:
+      tags: [Orders & POS]
+      summary: Xem chi tiet mot don hang theo Ma don (PH...) hoac OrderId
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: PH261116
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay don hang
+    delete:
+      tags: [Orders & POS]
+      summary: Xoa don hang (tu dong hoan kho neu don chua huy - Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: PH261116
+      responses:
+        "200":
+          description: Da xoa don hang
+        "404":
+          description: Khong tim thay don hang
+
+  /orders/{id}/items:
+    get:
+      tags: [Orders & POS]
+      summary: Lay danh sach san pham thuoc mot don hang
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: PH261116
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay don hang
 
   /orders/{id}/status:
     patch:
       tags: [Orders & POS]
-      summary: Cap nhat trang thai don hang (pending, shipping, completed, cancelled)
+      summary: Cap nhat trang thai don hang (dong bo hoan/tru ton kho hai chieu khi huy hoac mo lai)
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
@@ -452,9 +2000,11 @@ paths:
           application/json:
             schema:
               type: object
+              required: [status]
               properties:
                 status:
                   type: string
+                  enum: [pending, shipping, completed, cancelled]
                   example: completed
                 staffName:
                   type: string
@@ -462,33 +2012,194 @@ paths:
       responses:
         "200":
           description: Da cap nhat trang thai
+        "400":
+          description: Trang thai khong hop le hoac khong du ton kho de mo lai don da huy
+        "404":
+          description: Khong tim thay don hang
+
+  /orders/{id}/cancel:
+    post:
+      tags: [Orders & POS]
+      summary: Khach hang hoac khach vang lai tu huy don hang dang cho xac nhan (hoan lai ton kho)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: PH261116
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phone:
+                  type: string
+                  example: "0907345112"
+      responses:
+        "200":
+          description: Da huy don hang thanh cong
+        "400":
+          description: Chi co the huy don dang pending
+        "403":
+          description: SDT hoac tai khoan khong khop chu don hang
+        "404":
+          description: Khong tim thay don hang
+
+  /order-items:
+    get:
+      tags: [Orders & POS]
+      summary: Lay danh sach chi tiet dong don hang (ho tro loc theo orderId - Admin/Staff)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: orderId
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Thanh cong
 
   /analytics/overview:
     get:
       tags: [Orders & POS]
-      summary: Thong ke doanh thu, don cho duyet va ton kho thap
+      summary: Tong quan doanh thu don hang + Spa, ton kho thap, top san pham ban chay va xu huong thang
+      security:
+        - bearerAuth: []
       responses:
         "200":
           description: Thanh cong
 
+  /analytics/daily:
+    get:
+      tags: [Orders & POS]
+      summary: Bao cao doanh thu va hoa don chi tiet theo ngay va khung gio (Admin/Staff)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: date
+          schema:
+            type: string
+            format: date
+            example: "2026-11-18"
+        - in: query
+          name: startTime
+          schema:
+            type: string
+            example: "00:00"
+        - in: query
+          name: endTime
+          schema:
+            type: string
+            example: "23:59"
+      responses:
+        "200":
+          description: Thanh cong
+        "400":
+          description: Dinh dang ngay khong hop le
+
+  /analytics/period:
+    get:
+      tags: [Orders & POS]
+      summary: Bao cao doanh thu theo 12 thang trong nam (past-months) hoac 3 nam gan nhat (past-years)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: period
+          schema:
+            type: string
+            enum: [past-months, past-years]
+            default: past-months
+        - in: query
+          name: year
+          schema:
+            type: integer
+            example: 2026
+      responses:
+        "200":
+          description: Thanh cong
+
+  # ==========================================================================
+  # SPA & CONTACT
+  # ==========================================================================
   /spa-packages:
     get:
       tags: [Spa & Contact]
-      summary: Lay bang gia cac goi dich vu Spa
-      responses:
-        "200":
-          description: Thanh cong
-
-  /service-bookings:
-    get:
-      tags: [Spa & Contact]
-      summary: Lay danh sach lich hen Spa
+      summary: Lay danh sach bang gia cac goi dich vu Spa thu cung
       responses:
         "200":
           description: Thanh cong
     post:
       tags: [Spa & Contact]
-      summary: Dat lich hen Spa moi
+      summary: Tao goi dich vu Spa moi (Admin)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, price, duration]
+              properties:
+                id:
+                  type: string
+                  example: pkg-5
+                packageId:
+                  type: string
+                  example: pkg-5
+                name:
+                  type: string
+                  example: Goi tam suoi khoang khu mui
+                desc:
+                  type: string
+                description:
+                  type: string
+                price:
+                  type: number
+                  example: 240000
+                duration:
+                  type: string
+                  example: 50 phut
+      responses:
+        "201":
+          description: Tao goi Spa thanh cong
+        "409":
+          description: Ma goi dich vu Spa da ton tai
+
+  /spa-packages/{id}:
+    get:
+      tags: [Spa & Contact]
+      summary: Xem chi tiet mot goi dich vu Spa theo ma goi
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: pkg-3
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay goi Spa
+    put:
+      tags: [Spa & Contact]
+      summary: Cap nhat thong tin goi dich vu Spa (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: pkg-3
       requestBody:
         required: true
         content:
@@ -496,6 +2207,96 @@ paths:
             schema:
               type: object
               properties:
+                name:
+                  type: string
+                desc:
+                  type: string
+                description:
+                  type: string
+                price:
+                  type: number
+                duration:
+                  type: string
+      responses:
+        "200":
+          description: Cap nhat thanh cong
+        "404":
+          description: Khong tim thay goi Spa
+    delete:
+      tags: [Spa & Contact]
+      summary: Xoa goi dich vu Spa (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: pkg-5
+      responses:
+        "200":
+          description: Da xoa goi Spa
+        "404":
+          description: Khong tim thay goi Spa
+
+  /service-bookings:
+    get:
+      tags: [Spa & Contact]
+      summary: Lay danh sach lich hen Spa (loc userId, phone, status, staffName, date, fromDate, toDate, search)
+      parameters:
+        - in: query
+          name: userId
+          schema:
+            type: integer
+        - in: query
+          name: phone
+          schema:
+            type: string
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [all, upcoming, completed, cancelled]
+        - in: query
+          name: staffName
+          schema:
+            type: string
+        - in: query
+          name: date
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: fromDate
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: toDate
+          schema:
+            type: string
+            format: date
+        - in: query
+          name: search
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Spa & Contact]
+      summary: Dat lich hen Spa moi (tu dong phan cong nhan vien ranh theo khung gio)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [customerPhone]
+              properties:
+                bookingCode:
+                  type: string
                 packageId:
                   type: string
                   example: pkg-3
@@ -520,14 +2321,64 @@ paths:
                 customerPhone:
                   type: string
                   example: "0909686868"
+                staffName:
+                  type: string
+                note:
+                  type: string
       responses:
         "201":
           description: Dat lich thanh cong
+        "400":
+          description: Ngay dat lich hoac SDT khong hop le
+        "409":
+          description: Ma lich hen da ton tai
+
+  /service-bookings/lookup:
+    get:
+      tags: [Spa & Contact]
+      summary: Tra cuu lich hen Spa khach vang lai theo SDT (chuan hoa) va Ma lich hen
+      parameters:
+        - in: query
+          name: phone
+          required: true
+          schema:
+            type: string
+            example: "0935678920"
+        - in: query
+          name: bookingCode
+          required: true
+          schema:
+            type: string
+            example: BK261116
+      responses:
+        "200":
+          description: Tim thay lich hen
+        "400":
+          description: Thieu SDT hoac Ma lich hen
+        "404":
+          description: Khong tim thay lich hen
 
   /service-bookings/{id}:
-    patch:
+    get:
       tags: [Spa & Contact]
-      summary: Cap nhat trang thai hoac phan cong nhan vien lich Spa
+      summary: Xem chi tiet mot lich hen Spa theo BookingCode hoac BookingId
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: BK261116
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay lich hen
+    put:
+      tags: [Spa & Contact]
+      summary: Cap nhat day du hoac mot phan thong tin lich hen Spa (Admin/Staff)
+      security:
+        - bearerAuth: []
       parameters:
         - in: path
           name: id
@@ -544,6 +2395,52 @@ paths:
               properties:
                 status:
                   type: string
+                  enum: [upcoming, completed, cancelled]
+                staffName:
+                  type: string
+                date:
+                  type: string
+                timeSlot:
+                  type: string
+                petName:
+                  type: string
+                serviceName:
+                  type: string
+                price:
+                  type: number
+                customerName:
+                  type: string
+                customerPhone:
+                  type: string
+                note:
+                  type: string
+      responses:
+        "200":
+          description: Da cap nhat lich hen
+        "404":
+          description: Khong tim thay lich hen
+    patch:
+      tags: [Spa & Contact]
+      summary: Cap nhat trang thai hoac phan cong nhan vien lich Spa (Admin/Staff)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: BK261116
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum: [upcoming, completed, cancelled]
                   example: completed
                 staffName:
                   type: string
@@ -551,23 +2448,143 @@ paths:
       responses:
         "200":
           description: Da cap nhat
-
-  /contact-messages:
-    get:
+        "404":
+          description: Khong tim thay lich hen
+    delete:
       tags: [Spa & Contact]
-      summary: Xem danh sach tin nhan lien he
+      summary: Xoa lich hen Spa (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: BK261116
       responses:
         "200":
-          description: Thanh cong
-    post:
+          description: Da xoa lich hen
+        "404":
+          description: Khong tim thay lich hen
+
+  /service-bookings/{id}/status:
+    patch:
       tags: [Spa & Contact]
-      summary: Khach gui yeu cau lien he moi
+      summary: Cap nhat trang thai lich hen Spa (upcoming, completed, cancelled)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: BK261116
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [upcoming, completed, cancelled]
+                  example: completed
+      responses:
+        "200":
+          description: Da cap nhat trang thai lich hen
+
+  /service-bookings/{id}/assign-staff:
+    patch:
+      tags: [Spa & Contact]
+      summary: Phan cong nhan vien phu trach lich hen Spa
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: BK261116
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [staffName]
+              properties:
+                staffName:
+                  type: string
+                  example: Mai Nguyen
+      responses:
+        "200":
+          description: Da phan cong nhan vien
+
+  /service-bookings/{id}/cancel:
+    post:
+      tags: [Spa & Contact]
+      summary: Khach hang hoac khach vang lai tu huy lich hen Spa sap toi
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: string
+            example: BK261116
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                phone:
+                  type: string
+                  example: "0935678920"
+      responses:
+        "200":
+          description: Da huy lich hen thanh cong
+        "400":
+          description: Chi co the huy lich hen upcoming
+        "403":
+          description: SDT hoac tai khoan khong khop chu lich hen
+        "404":
+          description: Khong tim thay lich hen
+
+  /contact-messages:
+    get:
+      tags: [Spa & Contact]
+      summary: Xem danh sach tin nhan lien he (loc status, search - Admin/Staff)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [new, replied, closed]
+        - in: query
+          name: search
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Thanh cong
+    post:
+      tags: [Spa & Contact]
+      summary: Khach hang gui yeu cau lien he ho tro moi
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [senderName, senderPhone, message]
               properties:
                 senderName:
                   type: string
@@ -583,4 +2600,72 @@ paths:
                   example: Nho shop tu van hat cho Poodle 2 tuoi.
       responses:
         "201":
-          description: Gui thanh cong
+          description: Gui tin nhan lien he thanh cong
+        "400":
+          description: Thieu thong tin hoac SDT khong hop le
+
+  /contact-messages/{id}:
+    get:
+      tags: [Spa & Contact]
+      summary: Xem chi tiet mot tin nhan lien he theo MessageId (Admin/Staff)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Thanh cong
+        "404":
+          description: Khong tim thay tin nhan
+    delete:
+      tags: [Spa & Contact]
+      summary: Xoa tin nhan lien he (Admin)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Da xoa tin nhan lien he
+        "404":
+          description: Khong tim thay tin nhan
+
+  /contact-messages/{id}/status:
+    patch:
+      tags: [Spa & Contact]
+      summary: Cap nhat trang thai xu ly tin nhan lien he (new, replied, closed)
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [new, replied, closed]
+                  example: replied
+      responses:
+        "200":
+          description: Cap nhat trang thai thanh cong
+        "400":
+          description: Trang thai khong hop le
+        "404":
+          description: Khong tim thay tin nhan
