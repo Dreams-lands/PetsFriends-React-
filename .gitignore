@@ -11,7 +11,7 @@ out/
 */dist/
 */build/
 
-# Environment variables
+# Environment variables (chặn file thật, cho phép file mẫu)
 .env
 .env.local
 .env.development.local
@@ -19,6 +19,8 @@ out/
 .env.production.local
 */.env
 */.env.*
+!.env.example
+!*/.env.example
 
 # Logs
 logs/
