@@ -1,10 +1,13 @@
 openapi: 3.0.3
 info:
   title: QLThuCung RESTful API
-  version: 1.0.0
+  version: 2.1.0
   description: >
-    Tài liệu đặc tả RESTful API làm cầu nối giữa Backend (Node.js + SQL Server)
-    và Frontend (React) cho dự án Quản lý Thú Cưng.
+    Tài liệu đặc tả RESTful API giữa Backend (Node.js + SQL Server) và Frontend (React)
+    cho dự án Quản lý Thú Cưng.
+    Response thành công: { success: true, data: ... }.
+    Response lỗi: { success: false, message: "..." }.
+    Vai trò: admin (toàn quyền), staff (quyền theo ma trận phân quyền do admin cấu hình).
 
 servers:
   - url: http://localhost:5000/api
@@ -12,60 +15,547 @@ servers:
 
 tags:
   - name: System
-    description: Kiểm tra trạng thái hệ thống
-  - name: Pets
-    description: Quản lý thú cưng (mẫu tham khảo)
+  - name: Auth
+  - name: Users
+    description: Chỉ admin
+  - name: Products
+    description: Staff xem theo quyền inventoryView; thêm, sửa, xóa theo quyền inventoryEdit
+  - name: Orders
+    description: Theo quyền ordersManage
+  - name: Bookings
+    description: Theo quyền appointments
+  - name: Dashboard
+    description: Tổng quan cho admin và staff; doanh thu chi tiết theo quyền analytics
+  - name: Payments
+    description: Cấu hình cổng thanh toán (admin) và trạng thái thanh toán của đơn (admin, staff)
+  - name: Settings
+    description: Thông tin cửa hàng và ma trận phân quyền staff
 
 paths:
   /health:
     get:
-      tags:
-        - System
+      tags: [System]
       summary: Kiểm tra kết nối API
       responses:
         "200":
-          description: API đang hoạt động bình thường
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  status:
-                    type: string
-                    example: ok
-                  message:
-                    type: string
-                    example: QLThuCung API is running
+          description: API đang hoạt động
 
-  /pets:
-    get:
-      tags:
-        - Pets
-      summary: Lấy danh sách thú cưng
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Đăng nhập, nhận JWT token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, example: admin@pethub.vn }
+                password: { type: string, example: Admin@123 }
       responses:
         "200":
-          description: Thành công
+          description: Thành công, trả data.token và data.user
+        "400": { description: Thiếu email hoặc mật khẩu }
+        "401": { description: Sai email hoặc mật khẩu }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Thông tin từ token hiện tại
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+        "401": { description: Chưa đăng nhập }
+
+  /users:
+    get:
+      tags: [Users]
+      summary: Danh sách người dùng (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+        "403": { description: Không phải admin }
+    post:
+      tags: [Users]
+      summary: Tạo người dùng (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInput" }
+      responses:
+        "201": { description: Tạo thành công }
+        "400": { description: Dữ liệu không hợp lệ }
+        "409": { description: Email đã tồn tại }
+
+  /users/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: integer } }
+    get:
+      tags: [Users]
+      summary: Chi tiết người dùng (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+        "404": { description: Không tìm thấy }
+    put:
+      tags: [Users]
+      summary: Cập nhật người dùng (admin)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/UserInput" }
+      responses:
+        "200": { description: Thành công }
+        "404": { description: Không tìm thấy }
+    delete:
+      tags: [Users]
+      summary: Xóa người dùng (admin)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+        "404": { description: Không tìm thấy }
+
+  /products:
+    get:
+      tags: [Products]
+      summary: Danh sách sản phẩm
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: category, in: query, schema: { type: string, enum: [food, hygiene, bed, backpack] } }
+        - { name: search, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Thành công }
+    post:
+      tags: [Products]
+      summary: Thêm sản phẩm (quyền inventoryEdit)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductInput" }
+      responses:
+        "201": { description: Tạo thành công }
+        "400": { description: Dữ liệu không hợp lệ }
+        "403": { description: Không có quyền }
+
+  /products/low-stock:
+    get:
+      tags: [Products]
+      summary: Sản phẩm sắp hết hàng (tồn kho <= ngưỡng cảnh báo)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+
+  /products/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string, example: prod-rc-mini } }
+    get:
+      tags: [Products]
+      summary: Chi tiết sản phẩm
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+        "404": { description: Không tìm thấy }
+    put:
+      tags: [Products]
+      summary: Sửa sản phẩm (quyền inventoryEdit)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ProductInput" }
+      responses:
+        "200": { description: Thành công }
+        "403": { description: Không có quyền }
+        "404": { description: Không tìm thấy }
+    delete:
+      tags: [Products]
+      summary: Xóa sản phẩm (quyền inventoryEdit)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+        "403": { description: Không có quyền }
+        "404": { description: Không tìm thấy }
+
+  /products/{id}/stock:
+    patch:
+      tags: [Products]
+      summary: Điều chỉnh tồn kho (quyền inventoryEdit)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [stockCount]
+              properties:
+                stockCount: { type: integer, example: 50 }
+      responses:
+        "200": { description: Thành công }
+        "400": { description: Tồn kho không hợp lệ }
+
+  /orders:
+    get:
+      tags: [Orders]
+      summary: Danh sách đơn hàng
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, shipping, completed, cancelled] } }
+        - { name: search, in: query, description: Tìm theo mã đơn, tên hoặc SĐT khách, schema: { type: string } }
+      responses:
+        "200": { description: Thành công, mỗi đơn có kèm items và paymentStatus }
+    post:
+      tags: [Orders]
+      summary: Tạo đơn (giá lấy từ database, không tin giá client gửi)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/OrderInput" }
+      responses:
+        "201": { description: Tạo thành công }
+        "400": { description: Dữ liệu không hợp lệ hoặc không đủ tồn kho }
+
+  /orders/{id}:
+    get:
+      tags: [Orders]
+      summary: Chi tiết đơn hàng
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: PH261115 } }
+      responses:
+        "200": { description: Thành công }
+        "404": { description: Không tìm thấy }
+
+  /orders/{id}/status:
+    patch:
+      tags: [Orders]
+      summary: Đổi trạng thái đơn
+      description: >
+        Luồng hợp lệ: pending → shipping → completed, hoặc cancelled trước khi hoàn thành.
+        Khi chuyển sang completed, hệ thống tự trừ tồn kho (chỉ một lần).
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [shipping, completed, cancelled] }
+      responses:
+        "200": { description: Thành công }
+        "400": { description: Chuyển trạng thái không hợp lệ hoặc không đủ tồn kho }
+        "404": { description: Không tìm thấy }
+
+  /bookings/services:
+    get:
+      tags: [Bookings]
+      summary: Danh sách gói dịch vụ (spa, khách sạn)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+
+  /bookings:
+    get:
+      tags: [Bookings]
+      summary: Danh sách lịch hẹn
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [upcoming, completed, cancelled] } }
+        - { name: date, in: query, description: "YYYY-MM-DD", schema: { type: string } }
+        - { name: search, in: query, schema: { type: string } }
+      responses:
+        "200": { description: Thành công }
+    post:
+      tags: [Bookings]
+      summary: Tạo lịch hẹn (giá lấy theo gói dịch vụ)
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/BookingInput" }
+      responses:
+        "201": { description: Tạo thành công }
+        "400": { description: Dữ liệu không hợp lệ }
+
+  /bookings/{id}:
+    get:
+      tags: [Bookings]
+      summary: Chi tiết lịch hẹn
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: BK261115 } }
+      responses:
+        "200": { description: Thành công }
+        "404": { description: Không tìm thấy }
+
+  /bookings/{id}/status:
+    patch:
+      tags: [Bookings]
+      summary: Đổi trạng thái lịch (upcoming → completed hoặc cancelled)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status: { type: string, enum: [completed, cancelled] }
+      responses:
+        "200": { description: Thành công }
+        "400": { description: Chuyển trạng thái không hợp lệ }
+        "404": { description: Không tìm thấy }
+
+  /dashboard/overview:
+    get:
+      tags: [Dashboard]
+      summary: Tổng quan (staff nhận monthRevenue = null)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: >
+            monthRevenue, totalOrders, pendingOrders, totalBookings, upcomingBookings,
+            lowStockCount, pendingOrderList, upcomingBookingList, lowStockList
+
+  /dashboard/revenue:
+    get:
+      tags: [Dashboard]
+      summary: Doanh thu chi tiết (admin, hoặc staff có quyền analytics)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: period, in: query, schema: { type: string, enum: [months, years, daily], default: months } }
+        - { name: year, in: query, schema: { type: integer, example: 2026 } }
+        - { name: days, in: query, description: Dùng với period=daily (1 đến 31), schema: { type: integer, default: 7 } }
+      responses:
+        "200": { description: "Thành công: trend gồm revenue, transfer, cash, orders theo kỳ" }
+        "403": { description: Không có quyền }
+
+  /payments/settings:
+    get:
+      tags: [Payments]
+      summary: Xem cấu hình cổng thanh toán (admin), khóa bí mật luôn được che bằng ********
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+        "403": { description: Không phải admin }
+    put:
+      tags: [Payments]
+      summary: Cập nhật cấu hình cổng thanh toán (admin)
+      description: >
+        Chỉ cập nhật các trường được gửi lên. Gửi lại chuỗi ******** cho khóa bí mật
+        thì giữ nguyên giá trị cũ. Phải còn ít nhất một phương thức được bật.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/PaymentSettingsInput" }
+      responses:
+        "200": { description: Thành công }
+        "400": { description: Dữ liệu không hợp lệ }
+        "403": { description: Không phải admin }
+
+  /payments/orders/{id}:
+    patch:
+      tags: [Payments]
+      summary: Cập nhật trạng thái thanh toán của đơn (admin, staff)
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string, example: PH261114 } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [paymentStatus]
+              properties:
+                paymentStatus: { type: string, enum: [unpaid, paid, refunded] }
+      responses:
+        "200": { description: Thành công, trả về đơn hàng kèm paymentStatus }
+        "400": { description: Trạng thái không hợp lệ hoặc đơn đã hủy }
+        "404": { description: Không tìm thấy đơn }
+
+  /settings/store:
+    get:
+      tags: [Settings]
+      summary: Thông tin cửa hàng (admin, staff)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200": { description: Thành công }
+    put:
+      tags: [Settings]
+      summary: Sửa thông tin cửa hàng (admin), chỉ cập nhật trường được gửi lên
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StoreSettingsInput" }
+      responses:
+        "200": { description: Thành công }
+        "400": { description: Dữ liệu không hợp lệ }
+        "403": { description: Không phải admin }
+
+  /settings/permissions:
+    get:
+      tags: [Settings]
+      summary: Ma trận quyền của staff (admin, staff)
+      security: [{ bearerAuth: [] }]
+      responses:
+        "200":
+          description: Thành công, quyền settings luôn là false
           content:
             application/json:
-              schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/Pet"
+              schema: { $ref: "#/components/schemas/StaffPermissions" }
+    put:
+      tags: [Settings]
+      summary: Sửa quyền của staff (admin)
+      description: >
+        Quyền ảnh hưởng thật tới API: inventoryView (xem sản phẩm), inventoryEdit
+        (thêm, sửa, xóa sản phẩm), ordersManage (đơn hàng), appointments (lịch hẹn),
+        analytics (doanh thu chi tiết). Gửi settings = true sẽ bị từ chối.
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StaffPermissions" }
+      responses:
+        "200": { description: Thành công }
+        "400": { description: Cố cấp quyền Hệ thống cho staff }
+        "403": { description: Không phải admin }
 
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   schemas:
-    Pet:
+    UserInput:
+      type: object
+      required: [name, email]
+      properties:
+        name: { type: string }
+        email: { type: string }
+        role: { type: string, enum: [admin, staff, user] }
+        password: { type: string, description: Bỏ trống khi sửa nếu không đổi }
+    ProductInput:
+      type: object
+      required: [name, category, priceNum]
+      properties:
+        id: { type: string, description: Bỏ trống để tự sinh }
+        brand: { type: string }
+        name: { type: string }
+        shortDesc: { type: string }
+        description: { type: string }
+        packSize: { type: string }
+        sizes: { type: array, items: { type: string } }
+        gallery: { type: array, items: { type: string } }
+        highlights: { type: array, items: { type: string } }
+        priceNum: { type: integer, example: 389000 }
+        originalPrice: { type: integer }
+        badge: { type: string }
+        category: { type: string, enum: [food, hygiene, bed, backpack] }
+        subType: { type: string }
+        petType: { type: string, enum: [dog, cat, both] }
+        image: { type: string }
+        stockCount: { type: integer }
+        lowStockThreshold: { type: integer, default: 15 }
+        isFeatured: { type: boolean }
+        isFlashSale: { type: boolean }
+    OrderInput:
+      type: object
+      required: [customerName, paymentMethod, items]
+      properties:
+        customerName: { type: string }
+        customerPhone: { type: string }
+        customerEmail: { type: string }
+        paymentMethod: { type: string, example: VNPay }
+        deliveryMethod: { type: string, enum: [delivery, pickup], default: pickup }
+        shippingAddress: { type: string, description: Bắt buộc khi deliveryMethod = delivery }
+        staffName: { type: string }
+        isGuest: { type: boolean }
+        items:
+          type: array
+          items:
+            type: object
+            required: [productId, quantity]
+            properties:
+              productId: { type: string }
+              quantity: { type: integer }
+              variant: { type: string }
+    BookingInput:
+      type: object
+      required: [serviceId, petName, date, timeSlot]
+      properties:
+        serviceId: { type: string, example: pkg-1 }
+        petName: { type: string }
+        date: { type: string, example: "2026-11-25" }
+        timeSlot: { type: string, example: 09:00 Sáng }
+        customerName: { type: string }
+        customerPhone: { type: string }
+        staffName: { type: string }
+        note: { type: string }
+    PaymentSettingsInput:
       type: object
       properties:
-        id:
-          type: integer
-          example: 1
-        name:
-          type: string
-          example: Milo
-        species:
-          type: string
-          example: Chó
-        age:
-          type: integer
-          example: 2
+        codEnabled: { type: boolean }
+        codNote: { type: string }
+        vnpayEnabled: { type: boolean }
+        vnpayTmnCode: { type: string }
+        vnpayEnvironment: { type: string, enum: [sandbox, production] }
+        vnpayHashSecret: { type: string }
+        momoEnabled: { type: boolean }
+        momoPartnerCode: { type: string }
+        momoEnvironment: { type: string, enum: [sandbox, production] }
+        momoAccessKey: { type: string }
+        momoSecretKey: { type: string }
+    StoreSettingsInput:
+      type: object
+      properties:
+        storeName: { type: string }
+        streetAddress: { type: string }
+        district: { type: string }
+        city: { type: string }
+        hotline: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        zaloUrl: { type: string }
+        facebookUrl: { type: string }
+        hours: { type: string }
+        timezone: { type: string }
+        currency: { type: string }
+    StaffPermissions:
+      type: object
+      properties:
+        ordersManage: { type: boolean }
+        ordersInvoices: { type: boolean }
+        pos: { type: boolean }
+        appointments: { type: boolean }
+        inventoryView: { type: boolean }
+        inventoryEdit: { type: boolean }
+        analytics: { type: boolean }
+        settings: { type: boolean, description: Luôn false, chỉ admin }
