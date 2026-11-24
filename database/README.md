@@ -1,8 +1,10 @@
-# Cơ sở dữ liệu SQL Server — PetsFriend (QLThuCung)
+# Cơ sở dữ liệu SQL Server — PetsFriend (`QLThuCung`)
 
-Phiên bản gọn nhẹ gồm **10 bảng cốt lõi**, hỗ trợ đầy đủ luồng **Khách vãng lai mua hàng / đặt lịch / liên hệ không cần đăng nhập**, đồng thời có tài khoản **Admin / Staff / Customer**.
+Toàn bộ script tạo database (`QLThuCung`), **15 bảng** và dữ liệu mẫu đã được gộp vào **1 file duy nhất** ở thư mục gốc của repo:
 
-## 1. Danh sách bảng
+- [PetsFriend.sql](../PetsFriend.sql)
+
+## 1. Danh sách 15 bảng
 
 | Bảng | Mục đích |
 | :--- | :--- |
@@ -16,10 +18,26 @@ Phiên bản gọn nhẹ gồm **10 bảng cốt lõi**, hỗ trợ đầy đủ
 | `SpaPackages` | Các gói dịch vụ Spa |
 | `ServiceBookings` | Lịch hẹn Spa (`UserId = NULL` cho khách vãng lai) |
 | `ContactMessages` | Tin nhắn liên hệ (không cần đăng nhập) |
+| `UserWishlists` | Danh sách sản phẩm yêu thích của hội viên |
+| `StaffRoster` | Danh sách nhân viên trực ca dùng chung tài khoản `staff` |
+| `StaffPermissions` | Ma trận phân quyền cho tài khoản `staff` |
+| `PaymentGatewayConfigs` | Cấu hình cổng thanh toán (`cod`, `vnpay`, `momo`) |
+| `PaymentTransactions` | Lịch sử giao dịch thanh toán của đơn hàng |
 
-## 2. Thứ tự chạy trong SSMS
+## 2. Cách chạy
 
-Nếu đã chạy bản cũ trước đó, xóa DB cũ trước:
+Mở [PetsFriend.sql](../PetsFriend.sql) trong SSMS (hoặc Azure Data Studio) và nhấn `F5` để thực thi toàn bộ file, hoặc chạy bằng dòng lệnh:
+
+```powershell
+# Windows Auth
+sqlcmd -S localhost -E -C -f 65001 -i PetsFriend.sql
+
+# Hoặc SQL Auth (sa)
+sqlcmd -S localhost -U sa -P <mat_khau> -C -f 65001 -i PetsFriend.sql
+```
+
+Script đã viết dạng **idempotent** (`IF DB_ID(...) IS NULL`, `IF OBJECT_ID(...) IS NULL`, `MERGE`), có thể chạy lại nhiều lần mà không làm mất dữ liệu hiện có. Nếu muốn reset sạch DB về ban đầu thì drop DB cũ trước rồi chạy lại `PetsFriend.sql`:
+
 ```sql
 USE master;
 GO
@@ -27,7 +45,3 @@ ALTER DATABASE QLThuCung SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
 DROP DATABASE QLThuCung;
 GO
 ```
-
-Sau đó copy hết (`Ctrl+A` -> `Ctrl+C`) và nhấn `F5` lần lượt **2 file**:
-1. [01_create_database_and_schema.sql](file:///d:/Project/QLThuCung/database/scripts/01_create_database_and_schema.sql) — Tạo DB & 10 bảng.
-2. [01_seed_initial_data.sql](file:///d:/Project/QLThuCung/database/seeds/01_seed_initial_data.sql) — Nạp dữ liệu mẫu để test (gồm tài khoản `admin`, `staff`, `customer`, sản phẩm, gói Spa, đơn hàng & lịch hẹn khách vãng lai).
