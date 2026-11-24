@@ -1,4 +1,4 @@
-const jwt = require('jsonwebtoken');
+const { verifyUserToken } = require('../utils/passwordAndJwt');
 const httpError = require('../utils/httpError');
 
 exports.requireAuth = (req, res, next) => {
@@ -7,7 +7,7 @@ exports.requireAuth = (req, res, next) => {
   if (!token) return next(httpError(401, 'Bạn chưa đăng nhập'));
 
   try {
-    req.user = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = verifyUserToken(token);
     next();
   } catch {
     next(httpError(401, 'Phiên đăng nhập hết hạn hoặc không hợp lệ'));

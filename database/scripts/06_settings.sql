@@ -22,17 +22,3 @@ INSERT INTO StoreSettings VALUES (1, N'PetsFriend Flagship — Chi nhánh Quận
   N'1900 6868', N'0909 686 868', N'chamsoc@pethub.vn', N'https://zalo.me/0909686868', N'https://www.facebook.com/pethub.vn',
   N'08:00 – 21:00 mỗi ngày', N'Asia/Ho_Chi_Minh (UTC+07:00)', N'VND (₫)');
 GO
-IF OBJECT_ID('dbo.StaffPermissions', 'U') IS NULL
-CREATE TABLE dbo.StaffPermissions (
-  Id             INT NOT NULL PRIMARY KEY CHECK (Id = 1),
-  OrdersManage   BIT NOT NULL DEFAULT 1,
-  OrdersInvoices BIT NOT NULL DEFAULT 1,
-  Pos            BIT NOT NULL DEFAULT 1,
-  Appointments   BIT NOT NULL DEFAULT 1,
-  InventoryView  BIT NOT NULL DEFAULT 1,
-  InventoryEdit  BIT NOT NULL DEFAULT 0,
-  Analytics      BIT NOT NULL DEFAULT 0
-);
-GO
-IF NOT EXISTS (SELECT 1 FROM StaffPermissions) INSERT INTO StaffPermissions (Id) VALUES (1);
-GO

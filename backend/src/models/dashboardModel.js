@@ -10,7 +10,7 @@ WITH r AS (
                 OR LOWER(PaymentMethod) LIKE N'%momo%'
                 OR LOWER(PaymentMethod) LIKE N'%chuyển khoản%' THEN 1 ELSE 0 END AS isTransfer,
          1 AS isOrder
-  FROM Orders WHERE Status = 'completed'
+  FROM Orders WHERE OrderStatus = 'completed'
   UNION ALL
   SELECT BookingDate, CAST(Price AS BIGINT), 0, 0
   FROM Bookings WHERE Status = 'completed'
@@ -26,6 +26,8 @@ const clean = (r) => ({
   revenue: num(r.revenue), transfer: num(r.transfer), cash: num(r.cash), orders: num(r.orders),
 });
 
+const LOW_STOCK_THRESHOLD = 15;
+
 exports.overview = async () => {
   const pool = await poolPromise;
 
@@ -34,18 +36,18 @@ exports.overview = async () => {
     WHERE YEAR(d) = YEAR(GETDATE()) AND MONTH(d) = MONTH(GETDATE())`);
 
   const r = await pool.request().query(`
-    SELECT COUNT(*) AS totalOrders, ISNULL(SUM(CASE WHEN Status = 'pending' THEN 1 ELSE 0 END), 0) AS pendingOrders FROM Orders;
+    SELECT COUNT(*) AS totalOrders, ISNULL(SUM(CASE WHEN OrderStatus = 'pending' THEN 1 ELSE 0 END), 0) AS pendingOrders FROM Orders;
     SELECT COUNT(*) AS totalBookings, ISNULL(SUM(CASE WHEN Status = 'upcoming' THEN 1 ELSE 0 END), 0) AS upcomingBookings FROM Bookings;
-    SELECT COUNT(*) AS lowStockCount FROM Products WHERE StockCount <= LowStockThreshold;
-    SELECT TOP 5 Id AS id, CustomerName AS customerName, PaymentMethod AS paymentMethod,
+    SELECT COUNT(*) AS lowStockCount FROM Products WHERE IsActive = 1 AND StockCount <= ${LOW_STOCK_THRESHOLD};
+    SELECT TOP 5 OrderId AS id, OrderCode AS orderCode, CustomerName AS customerName, PaymentMethod AS paymentMethod,
            TotalAmount AS totalAmount, CreatedAt AS createdAt,
-           (SELECT ISNULL(SUM(Quantity), 0) FROM OrderItems WHERE OrderId = Orders.Id) AS itemCount
-    FROM Orders WHERE Status = 'pending' ORDER BY CreatedAt DESC;
+           (SELECT ISNULL(SUM(Quantity), 0) FROM OrderItems WHERE OrderId = Orders.OrderId) AS itemCount
+    FROM Orders WHERE OrderStatus = 'pending' ORDER BY CreatedAt DESC;
     SELECT TOP 5 Id AS id, ServiceName AS serviceName, PetName AS petName, BookingDate AS date,
            TimeSlot AS timeSlot, Price AS price
     FROM Bookings WHERE Status = 'upcoming' ORDER BY BookingDate, TimeSlot;
-    SELECT TOP 5 Id AS id, Name AS name, StockCount AS stockCount, LowStockThreshold AS lowStockThreshold
-    FROM Products WHERE StockCount <= LowStockThreshold ORDER BY StockCount;
+    SELECT TOP 5 ProductId AS id, Name AS name, StockCount AS stockCount, ${LOW_STOCK_THRESHOLD} AS lowStockThreshold
+    FROM Products WHERE IsActive = 1 AND StockCount <= ${LOW_STOCK_THRESHOLD} ORDER BY StockCount;
   `);
   const s = r.recordsets;
 

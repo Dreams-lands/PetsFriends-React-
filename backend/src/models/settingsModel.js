@@ -4,9 +4,15 @@ const STORE_COLS = `StoreName AS storeName, StreetAddress AS streetAddress, Dist
   Hotline AS hotline, Phone AS phone, Email AS email, ZaloUrl AS zaloUrl, FacebookUrl AS facebookUrl,
   Hours AS hours, Timezone AS timezone, Currency AS currency`;
 
-const PERM_COLS = `OrdersManage AS ordersManage, OrdersInvoices AS ordersInvoices, Pos AS pos,
-  Appointments AS appointments, InventoryView AS inventoryView, InventoryEdit AS inventoryEdit,
-  Analytics AS analytics`;
+const PERM_KEYS = [
+  'ordersManage',
+  'ordersInvoices',
+  'pos',
+  'appointments',
+  'inventoryView',
+  'inventoryEdit',
+  'analytics',
+];
 
 exports.getStore = async () => {
   const pool = await poolPromise;
@@ -43,18 +49,31 @@ exports.updateStore = async (s) => {
 
 exports.getPermissions = async () => {
   const pool = await poolPromise;
-  const r = await pool.request().query(`SELECT ${PERM_COLS} FROM StaffPermissions WHERE Id = 1`);
-  return { ...r.recordset[0], settings: false }; // settings luôn khóa cho admin
+  const r = await pool.request().query('SELECT PermKey, IsAllowed FROM StaffPermissions');
+  const perms = {};
+  PERM_KEYS.forEach((k) => { perms[k] = false; });
+  r.recordset.forEach((row) => {
+    if (PERM_KEYS.includes(row.PermKey)) {
+      perms[row.PermKey] = Boolean(row.IsAllowed);
+    }
+  });
+  return { ...perms, settings: false }; // settings luôn khóa cho admin
 };
 
 exports.updatePermissions = async (p) => {
   const pool = await poolPromise;
-  const req = pool.request();
-  Object.keys(p).forEach((k) => req.input(k, sql.Bit, p[k]));
-  await req.query(`UPDATE StaffPermissions SET
-    OrdersManage = COALESCE(@ordersManage, OrdersManage), OrdersInvoices = COALESCE(@ordersInvoices, OrdersInvoices),
-    Pos = COALESCE(@pos, Pos), Appointments = COALESCE(@appointments, Appointments),
-    InventoryView = COALESCE(@inventoryView, InventoryView), InventoryEdit = COALESCE(@inventoryEdit, InventoryEdit),
-    Analytics = COALESCE(@analytics, Analytics) WHERE Id = 1`);
+  for (const k of PERM_KEYS) {
+    if (p[k] !== undefined && p[k] !== null) {
+      await pool.request()
+        .input('key', sql.NVarChar(50), k)
+        .input('val', sql.Bit, p[k])
+        .query(`
+          IF EXISTS (SELECT 1 FROM StaffPermissions WHERE PermKey = @key)
+            UPDATE StaffPermissions SET IsAllowed = @val WHERE PermKey = @key
+          ELSE
+            INSERT INTO StaffPermissions (PermKey, IsAllowed) VALUES (@key, @val)
+        `);
+    }
+  }
   return exports.getPermissions();
 };
