@@ -1,21 +1,35 @@
-require('dotenv').config();
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-const useWindowsAuth =
-  (process.env.DB_AUTH || '').toLowerCase() === 'windows' ||
-  !process.env.DB_USER;
+const useWindowsAuth = (process.env.DB_AUTH || '').toLowerCase() === 'windows';
 
-const sql = useWindowsAuth
-  ? require('mssql/msnodesqlv8')
-  : require('mssql');
+let sql;
+if (useWindowsAuth) {
+  try {
+    sql = require('mssql/msnodesqlv8');
+  } catch {
+    console.warn('msnodesqlv8 chưa được cài đặt, chuyển sang dùng driver mssql mặc định.');
+    sql = require('mssql');
+  }
+} else {
+  sql = require('mssql');
+}
 
 const server = process.env.DB_SERVER || 'localhost';
 const database = process.env.DB_NAME || 'QLThuCung';
 
 async function createPool() {
   if (!useWindowsAuth) {
+    const user = process.env.DB_USER || 'sa';
+    const password = process.env.DB_PASSWORD || '';
+    
+    if (!process.env.DB_PASSWORD) {
+      console.warn('CHÚ Ý: Chưa tìm thấy DB_PASSWORD trong file api/.env. Đang thử kết nối user sa...');
+    }
+
     const sqlConfig = {
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
+      user,
+      password,
       server,
       database,
       port: parseInt(process.env.DB_PORT, 10) || 1433,
@@ -23,9 +37,11 @@ async function createPool() {
         encrypt: false,
         trustServerCertificate: true,
       },
+      connectionTimeout: 15000,
+      requestTimeout: 15000,
     };
     const pool = await new sql.ConnectionPool(sqlConfig).connect();
-    console.log('Kết nối SQL Server (SQL Auth) thành công!');
+    console.log(`Kết nối SQL Server (SQL Auth - user: ${user}) thành công!`);
     return pool;
   }
 
@@ -61,6 +77,8 @@ async function createPool() {
 }
 
 const poolPromise = createPool();
-poolPromise.catch(() => {});
+poolPromise.catch((err) => {
+  console.error('Không thể kết nối SQL Server:', err?.message || err);
+});
 
 module.exports = { sql, poolPromise };

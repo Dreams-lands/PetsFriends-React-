@@ -4,6 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "start": "node ../api/server.js",
+    "dev": "node --watch ../api/server.js",
     "test": "node --test tests/userBackend.test.js tests/fullBackend.test.js tests/paymentBackend.test.js",
     "test:user": "node --test tests/userBackend.test.js",
     "test:full": "node --test tests/fullBackend.test.js",
