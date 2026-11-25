@@ -1,10 +1,3 @@
--- ============================================================================
--- Dự án: PetsFriend (QLThuCung) - SQL Server (T-SQL)
--- File SQL duy nhất của dự án (Tạo DB, 15 bảng và dữ liệu mẫu)
--- Script viết dạng IDEMPOTENT: chạy lại nhiều lần an toàn, tự bổ sung bảng/cột
--- còn thiếu mà KHÔNG xóa dữ liệu hiện có.
--- ============================================================================
-
 IF DB_ID(N'QLThuCung') IS NULL
     CREATE DATABASE QLThuCung;
 GO
