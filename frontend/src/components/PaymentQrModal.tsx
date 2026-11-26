@@ -11,6 +11,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import type { LookupOrderEntry } from '../data/mockData';
+import type { ThemeMode } from '../lib/useThemeDroplet';
 import {
   getApiErrorMessage,
   petsFriendApi,
@@ -23,6 +24,7 @@ interface PaymentQrModalProps {
   session: OnlinePaymentSessionDto | null;
   customerPhone: string;
   customerName: string;
+  theme?: ThemeMode;
   onPaid: (updatedOrder?: LookupOrderEntry) => void;
   onFailed: (reason: string, updatedOrder?: LookupOrderEntry) => void;
   onClose: () => void;
@@ -33,6 +35,7 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
   session,
   customerPhone,
   customerName,
+  theme,
   onPaid,
   onFailed,
   onClose,
@@ -44,8 +47,15 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
   const [secondsLeft, setSecondsLeft] = useState<number>(900);
   const [submittingAction, setSubmittingAction] = useState<'confirm' | 'cancel' | null>(null);
 
+  const isDark =
+    theme !== undefined
+      ? theme === 'dark'
+      : typeof document !== 'undefined' &&
+        document.documentElement.getAttribute('data-theme') === 'dark';
+
   const isMomo = session?.gateway === 'momo';
   const brandColor = isMomo ? '#a50064' : '#005baa';
+  const accentTextColor = isDark ? (isMomo ? '#f472b6' : '#60a5fa') : brandColor;
   const gatewayLabel = isMomo ? 'Ví điện tử MoMo' : 'VNPay QR';
   const badgeLabel = isMomo ? 'MoMo' : 'VNPAY';
 
@@ -147,13 +157,15 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
       <div
         ref={modalRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="payment-qr-modal-title"
-        className="w-full max-w-[680px] rounded-2xl bg-white border border-[#dfe6f0] shadow-2xl overflow-hidden my-auto"
+        className={`w-full max-w-[720px] rounded-2xl border shadow-2xl overflow-hidden my-auto ${
+          isDark ? 'bg-[#111827] border-white/10' : 'bg-white border-[#dfe6f0]'
+        }`}
       >
         {/* Top Branded Header */}
         <div
@@ -198,8 +210,15 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
           {/* Left Column: Scannable QR Box */}
           <div className="md:col-span-5 flex flex-col items-center">
             <div
-              className="relative p-3.5 rounded-2xl bg-white border-2 shadow-sm"
-              style={{ borderColor: isMomo ? '#f5c2df' : '#c8ddf8' }}
+              className="relative p-3.5 rounded-2xl border-2 shadow-sm"
+              style={{
+                backgroundColor: '#ffffff',
+                borderColor: isDark
+                  ? 'rgba(255, 255, 255, 0.16)'
+                  : isMomo
+                    ? '#f5c2df'
+                    : '#c8ddf8',
+              }}
             >
               {/* 4 Corner Scan Brackets */}
               <span
@@ -229,16 +248,23 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
               />
             </div>
 
-            <div className="mt-3 text-center space-y-1">
-              <div className="inline-flex items-center gap-1.5 text-[12px] font-bold text-[#17324d]">
-                <Smartphone className="w-3.5 h-3.5" style={{ color: brandColor }} />
+            <div className="mt-3.5 w-full text-center space-y-1">
+              <div
+                className={`flex items-center justify-center gap-1.5 whitespace-nowrap text-[12px] font-bold ${
+                  isDark ? 'text-slate-100' : 'text-[#17324d]'
+                }`}
+              >
+                <Smartphone
+                  className="w-3.5 h-3.5 shrink-0"
+                  style={{ color: accentTextColor }}
+                />
                 <span>
                   {isMomo
-                    ? 'Mở ứng dụng MoMo -> Quét mã'
-                    : 'Mở App Ngân hàng / VNPay -> Quét QR'}
+                    ? 'Mở ứng dụng MoMo → Quét mã'
+                    : 'Mở App Ngân hàng / VNPay → Quét QR'}
                 </span>
               </div>
-              <p className="text-[11px] text-[#52657a]">
+              <p className={`text-[11px] ${isDark ? 'text-slate-400' : 'text-[#52657a]'}`}>
                 Hệ thống tự động cập nhật ngay sau khi nhận thanh toán
               </p>
             </div>
@@ -246,47 +272,73 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
 
           {/* Right Column: Order Info & Actions */}
           <div className="md:col-span-7 space-y-4">
-            <div className="rounded-xl bg-[#f8faff] border border-[#dfe6f0] p-4 space-y-2.5 text-[12.5px]">
-              <div className="flex items-baseline justify-between gap-2 pb-2.5 border-b border-[#dfe6f0]">
-                <span className="font-semibold text-[#52657a]">Số tiền thanh toán</span>
+            <div
+              className={`rounded-xl border p-4 space-y-2.5 text-[12.5px] ${
+                isDark
+                  ? 'bg-[#0B0F19] border-white/10'
+                  : 'bg-[#f8faff] border-[#dfe6f0]'
+              }`}
+            >
+              <div
+                className={`flex items-baseline justify-between gap-2 pb-2.5 border-b ${
+                  isDark ? 'border-white/10' : 'border-[#dfe6f0]'
+                }`}
+              >
+                <span className={`font-semibold ${isDark ? 'text-slate-400' : 'text-[#52657a]'}`}>
+                  Số tiền thanh toán
+                </span>
                 <span
                   className="text-[22px] font-extrabold tabular-nums"
-                  style={{ color: brandColor }}
+                  style={{ color: accentTextColor }}
                 >
                   {session.amount.toLocaleString('vi-VN')}₫
                 </span>
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[#52657a]">Đơn vị thụ hưởng</span>
-                <strong className="text-[#17324d]">PETSFRIEND STORE</strong>
+                <span className={isDark ? 'text-slate-400' : 'text-[#52657a]'}>
+                  Đơn vị thụ hưởng
+                </span>
+                <strong className={isDark ? 'text-slate-100' : 'text-[#17324d]'}>
+                  PETSFRIEND STORE
+                </strong>
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[#52657a]">Khách hàng</span>
-                <strong className="text-[#17324d] truncate max-w-[220px]">
+                <span className={isDark ? 'text-slate-400' : 'text-[#52657a]'}>Khách hàng</span>
+                <strong
+                  className={`truncate max-w-[220px] ${
+                    isDark ? 'text-slate-100' : 'text-[#17324d]'
+                  }`}
+                >
                   {customerName || 'Quý khách'}
                 </strong>
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[#52657a]">Mã giao dịch</span>
+                <span className={isDark ? 'text-slate-400' : 'text-[#52657a]'}>Mã giao dịch</span>
                 <button
                   type="button"
                   onClick={() => handleCopy(session.txnRef, 'mã giao dịch')}
-                  className="inline-flex items-center gap-1 font-mono font-bold text-[#17324d] hover:text-[#0667d0] cursor-pointer"
+                  className={`inline-flex items-center gap-1 font-mono font-bold cursor-pointer transition-colors ${
+                    isDark
+                      ? 'text-slate-200 hover:text-[#60a5fa]'
+                      : 'text-[#17324d] hover:text-[#0667d0]'
+                  }`}
                 >
                   <span>{session.txnRef}</span>
-                  <Copy className="w-3.5 h-3.5 text-[#52657a]" />
+                  <Copy className={`w-3.5 h-3.5 ${isDark ? 'text-slate-400' : 'text-[#52657a]'}`} />
                 </button>
               </div>
 
               <div className="flex items-center justify-between gap-2">
-                <span className="text-[#52657a]">Nội dung</span>
+                <span className={isDark ? 'text-slate-400' : 'text-[#52657a]'}>Nội dung</span>
                 <button
                   type="button"
                   onClick={() => handleCopy(transferContent, 'nội dung thanh toán')}
-                  className="inline-flex items-center gap-1 font-bold text-[#0667d0] hover:underline cursor-pointer"
+                  className={`inline-flex items-center gap-1 font-bold hover:underline cursor-pointer ${
+                    isDark ? 'text-[#60a5fa]' : 'text-[#0667d0]'
+                  }`}
                 >
                   <span>{transferContent}</span>
                   <Copy className="w-3.5 h-3.5" />
@@ -295,11 +347,25 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
             </div>
 
             {session.environment === 'sandbox' && (
-              <div className="rounded-xl bg-emerald-50/80 border border-emerald-200 px-3.5 py-2.5 flex items-start gap-2 text-[11.5px] text-emerald-900">
-                <ShieldCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+              <div
+                className={`rounded-xl bg-emerald-500/10 border border-emerald-500/30 px-3.5 py-2.5 flex items-start gap-2.5 text-[11.5px] leading-relaxed ${
+                  isDark ? 'text-emerald-300' : 'text-emerald-800'
+                }`}
+              >
+                <ShieldCheck
+                  className={`w-4 h-4 shrink-0 mt-0.5 ${
+                    isDark ? 'text-emerald-400' : 'text-emerald-600'
+                  }`}
+                />
                 <span>
-                  <strong>Chế độ Sandbox kiểm thử:</strong> Bạn có thể quét mã QR hoặc bấm nút{' '}
-                  <strong>Xác nhận đã quét QR</strong> bên dưới để chốt giao dịch vào SQL Server.
+                  <strong className={isDark ? 'text-emerald-200' : 'text-emerald-900'}>
+                    Chế độ Sandbox kiểm thử:
+                  </strong>{' '}
+                  Bạn có thể quét mã QR hoặc bấm nút{' '}
+                  <strong className={isDark ? 'text-emerald-200' : 'text-emerald-900'}>
+                    Xác nhận đã quét QR
+                  </strong>{' '}
+                  bên dưới để chốt giao dịch vào SQL Server.
                 </span>
               </div>
             )}
@@ -328,7 +394,11 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
                     href={session.paymentUrl}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="py-2.5 px-3 rounded-xl border border-[#dfe6f0] hover:border-[#0667d0] bg-white text-[#17324d] hover:text-[#0667d0] text-[12px] font-bold inline-flex items-center justify-center gap-1.5 transition-colors"
+                    className={`py-2.5 px-3 rounded-xl border text-[12px] font-bold inline-flex items-center justify-center gap-1.5 transition-colors ${
+                      isDark
+                        ? 'border-white/10 bg-[#0B0F19] text-slate-200 hover:border-[#60a5fa] hover:text-[#60a5fa]'
+                        : 'border-[#dfe6f0] hover:border-[#0667d0] bg-white text-[#17324d] hover:text-[#0667d0]'
+                    }`}
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
                     <span>Mở cổng {badgeLabel} Web</span>
@@ -339,9 +409,11 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
                   type="button"
                   disabled={submittingAction !== null}
                   onClick={() => handleSandboxOutcome('failed')}
-                  className={`py-2.5 px-3 rounded-xl border border-rose-200 hover:bg-rose-50 text-rose-700 text-[12px] font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:opacity-60 ${
-                    hasExternalGatewayUrl ? '' : 'sm:col-span-2'
-                  }`}
+                  className={`py-2.5 px-3 rounded-xl border text-[12px] font-bold inline-flex items-center justify-center gap-1.5 cursor-pointer transition-colors disabled:opacity-60 ${
+                    isDark
+                      ? 'border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300'
+                      : 'border-rose-200 hover:bg-rose-50 text-rose-700'
+                  } ${hasExternalGatewayUrl ? '' : 'sm:col-span-2'}`}
                 >
                   {submittingAction === 'cancel' ? (
                     <Loader2 className="w-3.5 h-3.5 animate-spin" />
