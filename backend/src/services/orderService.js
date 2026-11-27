@@ -1,4 +1,4 @@
-const { sql, poolPromise } = require('../../../api/db');
+const { poolPromise } = require('../../../api/db');
 const {
   mapOrderRow,
   mapProductRow,
@@ -21,8 +21,8 @@ function cleanPhone(raw) {
 }
 
 function sqlNormalizedPhone(columnName = 'CustomerPhone') {
-  const stripped = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(${columnName}, ''), '+84', '0'), ' ', ''), '.', ''), '-', ''), '(', ''), ')', '')`;
-  return `(CASE WHEN LEFT(${stripped}, 2) = '84' AND LEN(${stripped}) >= 11 THEN '0' + SUBSTRING(${stripped}, 3, 50) ELSE ${stripped} END)`;
+  const stripped = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(${columnName}, ''), '+84', '0'), ' ', ''), '.', ''), '-', ''), '(', ''), ')', '')`;
+  return `(CASE WHEN LEFT(${stripped}, 2) = '84' AND CHAR_LENGTH(${stripped}) >= 11 THEN CONCAT('0', SUBSTRING(${stripped}, 3, 50)) ELSE ${stripped} END)`;
 }
 
 function isValidIsoDate(str) {
@@ -57,51 +57,61 @@ function aggregateQuantitiesByProductId(itemRows = []) {
 }
 
 /**
- * Đồng bộ trạng thái thanh toán khi đơn hàng đổi trạng thái (chạy trong cùng SQL Transaction,
- * TRƯỚC câu lệnh UPDATE OrderStatus để OUTPUT INSERTED.* trả về dữ liệu mới nhất):
+ * Đồng bộ trạng thái thanh toán khi đơn hàng đổi trạng thái (chạy trong cùng MySQL Transaction):
  *  - Hủy đơn đã thu tiền         -> PaymentStatus = refunded, giao dịch success -> refunded
  *  - Giao thành công đơn COD     -> PaymentStatus = paid + ghi giao dịch thu tiền COD
  *  - Mở lại đơn đã hoàn tiền     -> PaymentStatus = unpaid (cần thu tiền lại)
  */
-async function syncPaymentOnStatusChange(transaction, order, nextStatus, actorName = null) {
+async function syncPaymentOnStatusChange(conn, order, nextStatus, actorName = null) {
   const currentPs = order.PaymentStatus || 'unpaid';
 
   if (nextStatus === 'cancelled' && order.OrderStatus !== 'cancelled' && currentPs === 'paid') {
-    await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .query(`
-        UPDATE dbo.Orders SET PaymentStatus = N'refunded' WHERE OrderId = @orderId;
-        UPDATE dbo.PaymentTransactions
-        SET Status = N'refunded',
-            Note = LEFT(CONCAT(ISNULL(Note, N''), N' | Hoàn tiền do hủy đơn hàng'), 400),
-            UpdatedAt = SYSUTCDATETIME()
-        WHERE OrderId = @orderId AND Status = N'success';
-      `);
+    await conn.query(
+      "UPDATE Orders SET PaymentStatus = 'refunded' WHERE OrderId = ?",
+      [order.OrderId]
+    );
+    await conn.query(
+      `
+        UPDATE PaymentTransactions
+        SET Status = 'refunded',
+            Note = LEFT(CONCAT(IFNULL(Note, ''), ' | Hoàn tiền do hủy đơn hàng'), 400),
+            UpdatedAt = UTC_TIMESTAMP()
+        WHERE OrderId = ? AND Status = 'success'
+      `,
+      [order.OrderId]
+    );
     return;
   }
 
   if (nextStatus === 'completed' && order.PaymentMethod === 'cod' && currentPs !== 'paid') {
-    await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .input('txnRef', sql.NVarChar(60), `${order.OrderCode}-COD-${Date.now()}`)
-      .input('amount', sql.Decimal(18, 0), Number(order.TotalAmount || 0))
-      .input('createdBy', sql.NVarChar(120), actorName)
-      .query(`
-        UPDATE dbo.Orders
-        SET PaymentStatus = N'paid', PaidAt = SYSUTCDATETIME()
-        WHERE OrderId = @orderId;
-        INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
-        VALUES (@orderId, @txnRef, N'cod', @amount, N'success', N'00', N'Thu tiền COD khi giao hàng thành công', @createdBy);
-      `);
+    await conn.query(
+      `
+        UPDATE Orders
+        SET PaymentStatus = 'paid', PaidAt = UTC_TIMESTAMP()
+        WHERE OrderId = ?
+      `,
+      [order.OrderId]
+    );
+    await conn.query(
+      `
+        INSERT INTO PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
+        VALUES (?, ?, 'cod', ?, 'success', '00', 'Thu tiền COD khi giao hàng thành công', ?)
+      `,
+      [
+        order.OrderId,
+        `${order.OrderCode}-COD-${Date.now()}`,
+        Number(order.TotalAmount || 0),
+        actorName ? String(actorName).slice(0, 120) : null,
+      ]
+    );
     return;
   }
 
   if (order.OrderStatus === 'cancelled' && nextStatus !== 'cancelled' && currentPs === 'refunded') {
-    await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .query(`
-        UPDATE dbo.Orders SET PaymentStatus = N'unpaid', PaidAt = NULL WHERE OrderId = @orderId;
-      `);
+    await conn.query(
+      "UPDATE Orders SET PaymentStatus = 'unpaid', PaidAt = NULL WHERE OrderId = ?",
+      [order.OrderId]
+    );
   }
 }
 
@@ -125,21 +135,20 @@ async function attachItemsToOrders(pool, orderRows) {
 
   for (let offset = 0; offset < orderIds.length; offset += chunkSize) {
     const chunk = orderIds.slice(offset, offset + chunkSize);
-    const req = pool.request();
-    const placeholders = chunk.map((id, idx) => {
-      const paramName = `oid${idx}`;
-      req.input(paramName, sql.Int, id);
-      return `@${paramName}`;
-    });
+    const placeholders = chunk.map(() => '?').join(', ');
 
-    const itemsRes = await req.query(`
-      SELECT *
-      FROM dbo.OrderItems
-      WHERE OrderId IN (${placeholders.join(', ')})
-      ORDER BY OrderItemId ASC
-    `);
+    // eslint-disable-next-line no-await-in-loop
+    const [itemRows] = await pool.query(
+      `
+        SELECT *
+        FROM OrderItems
+        WHERE OrderId IN (${placeholders})
+        ORDER BY OrderItemId ASC
+      `,
+      chunk
+    );
 
-    for (const item of itemsRes.recordset) {
+    for (const item of itemRows) {
       if (!itemsByOrderId[item.OrderId]) itemsByOrderId[item.OrderId] = [];
       itemsByOrderId[item.OrderId].push(item);
     }
@@ -164,21 +173,21 @@ async function listOrders(filters = {}) {
   } = filters;
 
   const pool = await poolPromise;
-  const request = pool.request();
-  let query = 'SELECT * FROM dbo.Orders WHERE 1=1';
+  let query = 'SELECT * FROM Orders WHERE 1=1';
+  const params = [];
 
   if (userId !== undefined && userId !== null && String(userId).trim() !== '') {
     const parsedUserId = Number(userId);
     if (!Number.isInteger(parsedUserId) || parsedUserId <= 0) {
       throw new AppError('Mã người dùng (userId) không hợp lệ.', 400);
     }
-    query += ' AND UserId = @userId';
-    request.input('userId', sql.Int, parsedUserId);
+    query += ' AND UserId = ?';
+    params.push(parsedUserId);
   }
 
   if (status && String(status).trim() && String(status).trim() !== 'all') {
-    query += ' AND OrderStatus = @status';
-    request.input('status', sql.NVarChar(20), String(status).trim());
+    query += ' AND OrderStatus = ?';
+    params.push(String(status).trim());
   }
 
   const resolvedSource = source || orderSource;
@@ -187,8 +196,8 @@ async function listOrders(filters = {}) {
     String(resolvedSource).trim() &&
     String(resolvedSource).trim() !== 'all'
   ) {
-    query += ' AND OrderSource = @source';
-    request.input('source', sql.NVarChar(20), String(resolvedSource).trim());
+    query += ' AND OrderSource = ?';
+    params.push(String(resolvedSource).trim());
   }
 
   if (
@@ -204,8 +213,8 @@ async function listOrders(filters = {}) {
         : rawPm === 'cod' || rawPm.includes('cod') || rawPm.includes('tiền mặt')
           ? 'cod'
           : rawPm;
-    query += ' AND PaymentMethod = @paymentMethod';
-    request.input('paymentMethod', sql.NVarChar(20), pmCode);
+    query += ' AND PaymentMethod = ?';
+    params.push(pmCode);
   }
 
   if (
@@ -213,8 +222,8 @@ async function listOrders(filters = {}) {
     String(staffName).trim() &&
     String(staffName).trim() !== 'all'
   ) {
-    query += ' AND StaffName = @staffName';
-    request.input('staffName', sql.NVarChar(120), String(staffName).trim());
+    query += ' AND StaffName = ?';
+    params.push(String(staffName).trim());
   }
 
   if (fromDate && String(fromDate).trim()) {
@@ -225,8 +234,8 @@ async function listOrders(filters = {}) {
         400
       );
     }
-    query += ' AND CAST(CreatedAt AS DATE) >= CAST(@fromDate AS DATE)';
-    request.input('fromDate', sql.VarChar(10), fromIso);
+    query += ' AND DATE(CreatedAt) >= CAST(? AS DATE)';
+    params.push(fromIso);
   }
 
   if (toDate && String(toDate).trim()) {
@@ -237,8 +246,8 @@ async function listOrders(filters = {}) {
         400
       );
     }
-    query += ' AND CAST(CreatedAt AS DATE) <= CAST(@toDate AS DATE)';
-    request.input('toDate', sql.VarChar(10), toIso);
+    query += ' AND DATE(CreatedAt) <= CAST(? AS DATE)';
+    params.push(toIso);
   }
 
   if (search && String(search).trim()) {
@@ -246,21 +255,22 @@ async function listOrders(filters = {}) {
     const cleanCodeSearch = rawSearch.replace(/^#/, '');
     const phoneDigits = cleanPhone(rawSearch);
 
-    request.input('qRaw', sql.NVarChar(150), `%${rawSearch}%`);
-    request.input('qCode', sql.NVarChar(150), `%${cleanCodeSearch}%`);
+    const qRaw = `%${rawSearch}%`;
+    const qCode = `%${cleanCodeSearch}%`;
 
     if (phoneDigits.length > 0) {
-      request.input('qPhone', sql.NVarChar(50), `%${phoneDigits}%`);
-      query += ` AND (OrderCode LIKE @qCode OR CustomerName LIKE @qRaw OR CustomerPhone LIKE @qRaw OR ${sqlNormalizedPhone('CustomerPhone')} LIKE @qPhone)`;
+      query += ` AND (OrderCode LIKE ? OR CustomerName LIKE ? OR CustomerPhone LIKE ? OR ${sqlNormalizedPhone('CustomerPhone')} LIKE ?)`;
+      params.push(qCode, qRaw, qRaw, `%${phoneDigits}%`);
     } else {
       query +=
-        ' AND (OrderCode LIKE @qCode OR CustomerName LIKE @qRaw OR CustomerPhone LIKE @qRaw)';
+        ' AND (OrderCode LIKE ? OR CustomerName LIKE ? OR CustomerPhone LIKE ?)';
+      params.push(qCode, qRaw, qRaw);
     }
   }
 
   query += ' ORDER BY CreatedAt DESC, OrderId DESC';
-  const orderRes = await request.query(query);
-  return attachItemsToOrders(pool, orderRes.recordset);
+  const [orderRows] = await pool.query(query, params);
+  return attachItemsToOrders(pool, orderRows);
 }
 
 async function lookupGuestOrder({ phone, orderCode, code } = {}) {
@@ -278,25 +288,25 @@ async function lookupGuestOrder({ phone, orderCode, code } = {}) {
   }
 
   const pool = await poolPromise;
-  const orderRes = await pool
-    .request()
-    .input('cleanPhone', sql.NVarChar(30), cleanPhoneVal)
-    .input('cleanCode', sql.NVarChar(30), cleanCodeVal)
-    .query(`
-      SELECT TOP 1 *
-      FROM dbo.Orders
-      WHERE UPPER(OrderCode) = @cleanCode
-        AND ${sqlNormalizedPhone('CustomerPhone')} = @cleanPhone
-    `);
+  const [orderRows] = await pool.query(
+    `
+      SELECT *
+      FROM Orders
+      WHERE UPPER(OrderCode) = ?
+        AND ${sqlNormalizedPhone('CustomerPhone')} = ?
+      LIMIT 1
+    `,
+    [cleanCodeVal, cleanPhoneVal]
+  );
 
-  if (orderRes.recordset.length === 0) {
+  if (orderRows.length === 0) {
     throw new AppError(
       'Không tìm thấy đơn hàng khớp với Số điện thoại và Mã đơn hàng này.',
       404
     );
   }
 
-  const [mapped] = await attachItemsToOrders(pool, orderRes.recordset);
+  const [mapped] = await attachItemsToOrders(pool, orderRows);
   return mapped;
 }
 
@@ -309,22 +319,24 @@ async function getOrderById(idOrCode) {
     throw new AppError('Mã đơn hàng không hợp lệ.', 400);
   }
 
+  const numericId = /^\d+$/.test(idParam) ? Number(idParam) : -1;
   const pool = await poolPromise;
-  const orderRes = await pool
-    .request()
-    .input('code', sql.NVarChar(60), idParam)
-    .query(`
-      SELECT TOP 1 *
-      FROM dbo.Orders
-      WHERE UPPER(OrderCode) = UPPER(@code)
-         OR OrderId = TRY_CAST(@code AS INT)
-    `);
+  const [orderRows] = await pool.query(
+    `
+      SELECT *
+      FROM Orders
+      WHERE UPPER(OrderCode) = UPPER(?)
+         OR OrderId = ?
+      LIMIT 1
+    `,
+    [idParam, numericId]
+  );
 
-  if (orderRes.recordset.length === 0) {
+  if (orderRows.length === 0) {
     throw new AppError('Không tìm thấy đơn hàng.', 404);
   }
 
-  const [mapped] = await attachItemsToOrders(pool, orderRes.recordset);
+  const [mapped] = await attachItemsToOrders(pool, orderRows);
   return mapped;
 }
 
@@ -388,7 +400,7 @@ async function createOrder(body = {}) {
     throw new AppError('Mã đơn hàng không được vượt quá 20 ký tự.', 400);
   }
 
-  // Validate item quantities upfront before opening SQL transaction
+  // Validate item quantities upfront before opening transaction
   for (const item of items) {
     const qty = Number(item?.quantity ?? 1);
     if (!Number.isInteger(qty) || qty <= 0) {
@@ -403,11 +415,11 @@ async function createOrder(body = {}) {
 
   // Online checkout: chặn phương thức thanh toán đang bị Admin tắt trong PaymentGatewayConfigs
   if (orderSource === 'online') {
-    const gwRes = await pool
-      .request()
-      .input('gw', sql.NVarChar(20), paymentCode)
-      .query('SELECT TOP 1 DisplayName, IsEnabled FROM dbo.PaymentGatewayConfigs WHERE Gateway = @gw');
-    const gwRow = gwRes.recordset[0];
+    const [gwRows] = await pool.query(
+      'SELECT DisplayName, IsEnabled FROM PaymentGatewayConfigs WHERE Gateway = ? LIMIT 1',
+      [paymentCode]
+    );
+    const gwRow = gwRows[0];
     if (gwRow && !gwRow.IsEnabled) {
       throw new AppError(
         `Phương thức thanh toán "${gwRow.DisplayName}" hiện đang tạm ngưng. Vui lòng chọn phương thức khác.`,
@@ -426,62 +438,67 @@ async function createOrder(body = {}) {
   ) {
     const candidateUid = Number(body.userId);
     if (Number.isInteger(candidateUid) && candidateUid > 0) {
-      const userCheck = await pool
-        .request()
-        .input('uid', sql.Int, candidateUid)
-        .query('SELECT TOP 1 UserId FROM dbo.Users WHERE UserId = @uid');
-      if (userCheck.recordset.length > 0) {
-        resolvedUserId = userCheck.recordset[0].UserId;
+      const [userCheck] = await pool.query(
+        'SELECT UserId FROM Users WHERE UserId = ? LIMIT 1',
+        [candidateUid]
+      );
+      if (userCheck.length > 0) {
+        resolvedUserId = userCheck[0].UserId;
       }
     }
   } else if (!body.userId && body.isGuest === false) {
-    const memberRes = await pool
-      .request()
-      .input('cleanPhone', sql.NVarChar(30), normalizedPhone)
-      .query(`
-        SELECT TOP 1 UserId
-        FROM dbo.Users
-        WHERE ${sqlNormalizedPhone('Phone')} = @cleanPhone
-        ORDER BY CASE WHEN Role = N'customer' THEN 0 ELSE 1 END, UserId DESC
-      `);
-    if (memberRes.recordset.length > 0) {
-      resolvedUserId = memberRes.recordset[0].UserId;
+    const [memberRows] = await pool.query(
+      `
+        SELECT UserId
+        FROM Users
+        WHERE ${sqlNormalizedPhone('Phone')} = ?
+        ORDER BY CASE WHEN Role = 'customer' THEN 0 ELSE 1 END, UserId DESC
+        LIMIT 1
+      `,
+      [normalizedPhone]
+    );
+    if (memberRows.length > 0) {
+      resolvedUserId = memberRows[0].UserId;
     }
   }
 
   const isGuestBit = resolvedUserId ? 0 : body.isGuest === false ? 0 : 1;
 
-  const transaction = new sql.Transaction(pool);
-  let txBegun = false;
-
+  const conn = await pool.getConnection();
   try {
-    await transaction.begin();
-    txBegun = true;
+    await conn.beginTransaction();
 
     // 1. Ensure OrderCode uniqueness inside transaction
     let orderCode = requestedCode;
     if (orderCode) {
-      const dupCheck = await new sql.Request(transaction)
-        .input('reqCode', sql.NVarChar(20), orderCode)
-        .query(`
-          SELECT TOP 1 OrderId
-          FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
-          WHERE UPPER(OrderCode) = UPPER(@reqCode)
-        `);
-      if (dupCheck.recordset.length > 0) {
+      const [dupCheck] = await conn.query(
+        `
+          SELECT OrderId
+          FROM Orders
+          WHERE UPPER(OrderCode) = UPPER(?)
+          LIMIT 1
+          FOR UPDATE
+        `,
+        [orderCode]
+      );
+      if (dupCheck.length > 0) {
         throw new AppError('Mã đơn hàng đã tồn tại.', 409);
       }
     } else {
       for (let attempt = 0; attempt < 10; attempt += 1) {
         const candidate = `PH${Math.floor(100000 + Math.random() * 900000)}`;
-        const dupCheck = await new sql.Request(transaction)
-          .input('genCode', sql.NVarChar(20), candidate)
-          .query(`
-            SELECT TOP 1 OrderId
-            FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
-            WHERE UPPER(OrderCode) = UPPER(@genCode)
-          `);
-        if (dupCheck.recordset.length === 0) {
+        // eslint-disable-next-line no-await-in-loop
+        const [dupCheck] = await conn.query(
+          `
+            SELECT OrderId
+            FROM Orders
+            WHERE UPPER(OrderCode) = UPPER(?)
+            LIMIT 1
+            FOR UPDATE
+          `,
+          [candidate]
+        );
+        if (dupCheck.length === 0) {
           orderCode = candidate;
           break;
         }
@@ -502,15 +519,18 @@ async function createOrder(body = {}) {
 
     const productByLowerId = new Map();
     for (const rawPid of uniqueRawPids) {
-      const prodRes = await new sql.Request(transaction)
-        .input('pid', sql.NVarChar(60), rawPid)
-        .query(`
+      // eslint-disable-next-line no-await-in-loop
+      const [prodRows] = await conn.query(
+        `
           SELECT ProductId, Name, PrimaryImage, Price, StockCount, IsActive
-          FROM dbo.Products WITH (UPDLOCK, HOLDLOCK)
-          WHERE ProductId = @pid
-        `);
-      if (prodRes.recordset.length > 0) {
-        const row = prodRes.recordset[0];
+          FROM Products
+          WHERE ProductId = ?
+          FOR UPDATE
+        `,
+        [rawPid]
+      );
+      if (prodRows.length > 0) {
+        const row = prodRows[0];
         productByLowerId.set(rawPid.toLowerCase(), row);
         productByLowerId.set(String(row.ProductId).toLowerCase(), row);
       }
@@ -600,91 +620,105 @@ async function createOrder(body = {}) {
     );
 
     // 4. Insert Order
-    const orderInsert = await new sql.Request(transaction)
-      .input('orderCode', sql.NVarChar(20), orderCode)
-      .input('userId', sql.Int, resolvedUserId)
-      .input('isGuest', sql.Bit, isGuestBit)
-      .input('customerName', sql.NVarChar(120), customerName)
-      .input('customerPhone', sql.NVarChar(20), storedCustomerPhone)
-      .input('customerEmail', sql.NVarChar(150), customerEmail)
-      .input('deliveryMethod', sql.NVarChar(20), deliveryMethod)
-      .input('shippingAddress', sql.NVarChar(350), shippingAddress)
-      .input('paymentMethod', sql.NVarChar(20), paymentCode)
-      .input('orderStatus', sql.NVarChar(20), initialStatus)
-      .input('orderSource', sql.NVarChar(20), orderSource)
-      .input('totalAmount', sql.Decimal(18, 0), totalAmount)
-      .input('staffName', sql.NVarChar(120), staffName)
-      .input('paymentStatus', sql.NVarChar(20), initialPaymentStatus)
-      .query(`
-        INSERT INTO dbo.Orders (
+    const [orderInsert] = await conn.query(
+      `
+        INSERT INTO Orders (
           OrderCode, UserId, IsGuest, CustomerName, CustomerPhone, CustomerEmail,
           DeliveryMethod, ShippingAddress, PaymentMethod, OrderStatus, OrderSource,
           TotalAmount, StaffName, PaymentStatus, PaidAt
         )
-        OUTPUT INSERTED.*
         VALUES (
-          @orderCode, @userId, @isGuest, @customerName, @customerPhone, @customerEmail,
-          @deliveryMethod, @shippingAddress, @paymentMethod, @orderStatus, @orderSource,
-          @totalAmount, @staffName, @paymentStatus,
-          CASE WHEN @paymentStatus = N'paid' THEN SYSUTCDATETIME() ELSE NULL END
+          ?, ?, ?, ?, ?, ?,
+          ?, ?, ?, ?, ?,
+          ?, ?, ?,
+          CASE WHEN ? = 'paid' THEN UTC_TIMESTAMP() ELSE NULL END
         )
-      `);
+      `,
+      [
+        orderCode,
+        resolvedUserId,
+        isGuestBit,
+        customerName.slice(0, 120),
+        storedCustomerPhone,
+        customerEmail ? customerEmail.slice(0, 150) : null,
+        deliveryMethod,
+        shippingAddress.slice(0, 350),
+        paymentCode,
+        initialStatus,
+        orderSource,
+        totalAmount,
+        staffName ? staffName.slice(0, 120) : null,
+        initialPaymentStatus,
+        initialPaymentStatus,
+      ]
+    );
 
-    const createdOrderRow = orderInsert.recordset[0];
+    const [createdOrderRows] = await conn.query(
+      'SELECT * FROM Orders WHERE OrderId = ?',
+      [orderInsert.insertId]
+    );
+    const createdOrderRow = createdOrderRows[0];
     const insertedItems = [];
 
     // 4.1 Đơn POS: ghi nhận giao dịch thu tiền tại quầy vào lịch sử thanh toán
     if (initialPaymentStatus === 'paid') {
-      await new sql.Request(transaction)
-        .input('orderId', sql.Int, createdOrderRow.OrderId)
-        .input('txnRef', sql.NVarChar(60), `${orderCode}-POS`)
-        .input('gateway', sql.NVarChar(20), paymentCode === 'cod' ? 'cash' : paymentCode)
-        .input('amount', sql.Decimal(18, 0), totalAmount)
-        .input('note', sql.NVarChar(400), paymentCode === 'cod' ? 'Thu tiền mặt tại quầy POS' : `Khách quét mã ${paymentCode.toUpperCase()} tại quầy POS`)
-        .input('createdBy', sql.NVarChar(120), staffName)
-        .query(`
-          INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
-          VALUES (@orderId, @txnRef, @gateway, @amount, N'success', N'00', @note, @createdBy)
-        `);
+      await conn.query(
+        `
+          INSERT INTO PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
+          VALUES (?, ?, ?, ?, 'success', '00', ?, ?)
+        `,
+        [
+          createdOrderRow.OrderId,
+          `${orderCode}-POS`,
+          paymentCode === 'cod' ? 'cash' : paymentCode,
+          totalAmount,
+          paymentCode === 'cod'
+            ? 'Thu tiền mặt tại quầy POS'
+            : `Khách quét mã ${paymentCode.toUpperCase()} tại quầy POS`,
+          staffName ? staffName.slice(0, 120) : null,
+        ]
+      );
     }
 
     // 5. Insert OrderItems
     for (const vItem of validatedItems) {
-      const itemInsert = await new sql.Request(transaction)
-        .input('orderId', sql.Int, createdOrderRow.OrderId)
-        .input('productId', sql.NVarChar(60), vItem.validProductId)
-        .input('productName', sql.NVarChar(200), vItem.productName)
-        .input('productImage', sql.NVarChar(500), vItem.productImage)
-        .input('variantLabel', sql.NVarChar(100), vItem.variantLabel)
-        .input('unitPrice', sql.Decimal(18, 0), vItem.unitPrice)
-        .input('quantity', sql.Int, vItem.qty)
-        .query(`
-          INSERT INTO dbo.OrderItems (
+      // eslint-disable-next-line no-await-in-loop
+      const [itemInsert] = await conn.query(
+        `
+          INSERT INTO OrderItems (
             OrderId, ProductId, ProductName, ProductImage, VariantLabel, UnitPrice, Quantity
           )
-          OUTPUT INSERTED.*
-          VALUES (
-            @orderId, @productId, @productName, @productImage, @variantLabel, @unitPrice, @quantity
-          )
-        `);
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `,
+        [
+          createdOrderRow.OrderId,
+          vItem.validProductId,
+          vItem.productName.slice(0, 200),
+          vItem.productImage.slice(0, 500),
+          vItem.variantLabel ? vItem.variantLabel.slice(0, 100) : null,
+          vItem.unitPrice,
+          vItem.qty,
+        ]
+      );
 
-      insertedItems.push(itemInsert.recordset[0]);
+      // eslint-disable-next-line no-await-in-loop
+      const [itemRows] = await conn.query(
+        'SELECT * FROM OrderItems WHERE OrderItemId = ?',
+        [itemInsert.insertId]
+      );
+      insertedItems.push(itemRows[0]);
     }
 
     // 6. Deduct StockCount per referenced ProductId
     for (const [pid, deductQty] of requiredByProductId.entries()) {
-      await new sql.Request(transaction)
-        .input('pid', sql.NVarChar(60), pid)
-        .input('qty', sql.Int, deductQty)
-        .query(`
-          UPDATE dbo.Products
-          SET StockCount = StockCount - @qty
-          WHERE ProductId = @pid
-        `);
+      // eslint-disable-next-line no-await-in-loop
+      await conn.query(
+        'UPDATE Products SET StockCount = StockCount - ? WHERE ProductId = ?',
+        [deductQty, pid]
+      );
     }
 
-    await transaction.commit();
-    txBegun = false;
+    await conn.commit();
 
     const needsOnlinePayment =
       orderSource === 'online' && (paymentCode === 'vnpay' || paymentCode === 'momo');
@@ -702,14 +736,10 @@ async function createOrder(body = {}) {
       },
     };
   } catch (err) {
-    if (txBegun) {
-      try {
-        await transaction.rollback();
-      } catch (_) {
-        // ignore rollback error
-      }
-    }
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 }
 
@@ -727,64 +757,67 @@ async function updateOrderStatus(idOrCode, payload = {}) {
     throw new AppError('Trạng thái đơn hàng không hợp lệ.', 400);
   }
 
+  const numericId = /^\d+$/.test(idParam) ? Number(idParam) : -1;
   const pool = await poolPromise;
-  const transaction = new sql.Transaction(pool);
-  let txBegun = false;
+  const conn = await pool.getConnection();
 
   try {
-    await transaction.begin();
-    txBegun = true;
+    await conn.beginTransaction();
 
-    const existingRes = await new sql.Request(transaction)
-      .input('code', sql.NVarChar(60), idParam)
-      .query(`
-        SELECT TOP 1 *
-        FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
-        WHERE UPPER(OrderCode) = UPPER(@code)
-           OR OrderId = TRY_CAST(@code AS INT)
-      `);
+    const [existingRows] = await conn.query(
+      `
+        SELECT *
+        FROM Orders
+        WHERE UPPER(OrderCode) = UPPER(?)
+           OR OrderId = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [idParam, numericId]
+    );
 
-    if (existingRes.recordset.length === 0) {
+    if (existingRows.length === 0) {
       throw new AppError('Không tìm thấy đơn hàng.', 404);
     }
 
-    const prevOrder = existingRes.recordset[0];
-    const itemsRes = await new sql.Request(transaction)
-      .input('orderId', sql.Int, prevOrder.OrderId)
-      .query(`
+    const prevOrder = existingRows[0];
+    const [itemRows] = await conn.query(
+      `
         SELECT *
-        FROM dbo.OrderItems
-        WHERE OrderId = @orderId
+        FROM OrderItems
+        WHERE OrderId = ?
         ORDER BY OrderItemId ASC
-      `);
+      `,
+      [prevOrder.OrderId]
+    );
 
-    const aggregatedItems = aggregateQuantitiesByProductId(itemsRes.recordset);
+    const aggregatedItems = aggregateQuantitiesByProductId(itemRows);
 
     if (prevOrder.OrderStatus !== 'cancelled' && nextStatus === 'cancelled') {
       for (const [pid, qty] of aggregatedItems) {
-        await new sql.Request(transaction)
-          .input('pid', sql.NVarChar(60), pid)
-          .input('qty', sql.Int, qty)
-          .query(`
-            UPDATE dbo.Products
-            SET StockCount = StockCount + @qty
-            WHERE ProductId = @pid
-          `);
+        // eslint-disable-next-line no-await-in-loop
+        await conn.query(
+          'UPDATE Products SET StockCount = StockCount + ? WHERE ProductId = ?',
+          [qty, pid]
+        );
       }
     } else if (
       prevOrder.OrderStatus === 'cancelled' &&
       nextStatus !== 'cancelled'
     ) {
       for (const [pid, requiredQty] of aggregatedItems) {
-        const prodRes = await new sql.Request(transaction)
-          .input('pid', sql.NVarChar(60), pid)
-          .query(`
+        // eslint-disable-next-line no-await-in-loop
+        const [prodRows] = await conn.query(
+          `
             SELECT ProductId, Name, StockCount
-            FROM dbo.Products WITH (UPDLOCK, HOLDLOCK)
-            WHERE ProductId = @pid
-          `);
+            FROM Products
+            WHERE ProductId = ?
+            FOR UPDATE
+          `,
+          [pid]
+        );
 
-        const prodRow = prodRes.recordset[0];
+        const prodRow = prodRows[0];
         if (!prodRow || Number(prodRow.StockCount) < requiredQty) {
           throw new AppError(
             'Không đủ tồn kho để mở lại đơn hàng đã hủy.',
@@ -794,44 +827,39 @@ async function updateOrderStatus(idOrCode, payload = {}) {
       }
 
       for (const [pid, requiredQty] of aggregatedItems) {
-        await new sql.Request(transaction)
-          .input('pid', sql.NVarChar(60), pid)
-          .input('qty', sql.Int, requiredQty)
-          .query(`
-            UPDATE dbo.Products
-            SET StockCount = StockCount - @qty
-            WHERE ProductId = @pid
-          `);
+        // eslint-disable-next-line no-await-in-loop
+        await conn.query(
+          'UPDATE Products SET StockCount = StockCount - ? WHERE ProductId = ?',
+          [requiredQty, pid]
+        );
       }
     }
 
-    await syncPaymentOnStatusChange(transaction, prevOrder, nextStatus, staffName);
+    await syncPaymentOnStatusChange(conn, prevOrder, nextStatus, staffName);
 
-    const updatedRes = await new sql.Request(transaction)
-      .input('orderId', sql.Int, prevOrder.OrderId)
-      .input('nextStatus', sql.NVarChar(20), nextStatus)
-      .input('staffName', sql.NVarChar(120), staffName)
-      .query(`
-        UPDATE dbo.Orders
-        SET OrderStatus = @nextStatus,
-            StaffName = COALESCE(@staffName, StaffName)
-        OUTPUT INSERTED.*
-        WHERE OrderId = @orderId
-      `);
+    await conn.query(
+      `
+        UPDATE Orders
+        SET OrderStatus = ?,
+            StaffName = COALESCE(?, StaffName)
+        WHERE OrderId = ?
+      `,
+      [nextStatus, staffName ? staffName.slice(0, 120) : null, prevOrder.OrderId]
+    );
 
-    await transaction.commit();
-    txBegun = false;
+    const [updatedRows] = await conn.query(
+      'SELECT * FROM Orders WHERE OrderId = ?',
+      [prevOrder.OrderId]
+    );
 
-    return mapOrderRow(updatedRes.recordset[0], itemsRes.recordset);
+    await conn.commit();
+
+    return mapOrderRow(updatedRows[0], itemRows);
   } catch (err) {
-    if (txBegun) {
-      try {
-        await transaction.rollback();
-      } catch (_) {
-        // ignore rollback error
-      }
-    }
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 }
 
@@ -843,43 +871,45 @@ async function cancelOrder(idOrCode, { requester = null, phone = '' } = {}) {
     throw new AppError('Mã đơn hàng không hợp lệ.', 400);
   }
 
+  const numericId = /^\d+$/.test(idParam) ? Number(idParam) : -1;
   const pool = await poolPromise;
-  const transaction = new sql.Transaction(pool);
-  let txBegun = false;
+  const conn = await pool.getConnection();
 
   try {
-    await transaction.begin();
-    txBegun = true;
+    await conn.beginTransaction();
 
-    const existingRes = await new sql.Request(transaction)
-      .input('code', sql.NVarChar(60), idParam)
-      .query(`
-        SELECT TOP 1 *
-        FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
-        WHERE UPPER(OrderCode) = UPPER(@code)
-           OR OrderId = TRY_CAST(@code AS INT)
-      `);
+    const [existingRows] = await conn.query(
+      `
+        SELECT *
+        FROM Orders
+        WHERE UPPER(OrderCode) = UPPER(?)
+           OR OrderId = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [idParam, numericId]
+    );
 
-    if (existingRes.recordset.length === 0) {
+    if (existingRows.length === 0) {
       throw new AppError('Không tìm thấy đơn hàng.', 404);
     }
 
-    const order = existingRes.recordset[0];
-    const itemsRes = await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .query(`
+    const order = existingRows[0];
+    const [itemRows] = await conn.query(
+      `
         SELECT *
-        FROM dbo.OrderItems
-        WHERE OrderId = @orderId
+        FROM OrderItems
+        WHERE OrderId = ?
         ORDER BY OrderItemId ASC
-      `);
+      `,
+      [order.OrderId]
+    );
 
     if (order.OrderStatus === 'cancelled') {
-      await transaction.commit();
-      txBegun = false;
+      await conn.commit();
       return {
         message: 'Đơn hàng đã ở trạng thái hủy.',
-        order: mapOrderRow(order, itemsRes.recordset),
+        order: mapOrderRow(order, itemRows),
       };
     }
 
@@ -912,50 +942,43 @@ async function cancelOrder(idOrCode, { requester = null, phone = '' } = {}) {
       }
     }
 
-    const aggregatedItems = aggregateQuantitiesByProductId(itemsRes.recordset);
+    const aggregatedItems = aggregateQuantitiesByProductId(itemRows);
     for (const [pid, qty] of aggregatedItems) {
-      await new sql.Request(transaction)
-        .input('pid', sql.NVarChar(60), pid)
-        .input('qty', sql.Int, qty)
-        .query(`
-          UPDATE dbo.Products
-          SET StockCount = StockCount + @qty
-          WHERE ProductId = @pid
-        `);
+      // eslint-disable-next-line no-await-in-loop
+      await conn.query(
+        'UPDATE Products SET StockCount = StockCount + ? WHERE ProductId = ?',
+        [qty, pid]
+      );
     }
 
     await syncPaymentOnStatusChange(
-      transaction,
+      conn,
       order,
       'cancelled',
       requester && requester.username ? requester.username : null
     );
 
-    const updatedRes = await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .query(`
-        UPDATE dbo.Orders
-        SET OrderStatus = N'cancelled'
-        OUTPUT INSERTED.*
-        WHERE OrderId = @orderId
-      `);
+    await conn.query(
+      "UPDATE Orders SET OrderStatus = 'cancelled' WHERE OrderId = ?",
+      [order.OrderId]
+    );
 
-    await transaction.commit();
-    txBegun = false;
+    const [updatedRows] = await conn.query(
+      'SELECT * FROM Orders WHERE OrderId = ?',
+      [order.OrderId]
+    );
+
+    await conn.commit();
 
     return {
       message: 'Đã hủy đơn hàng thành công.',
-      order: mapOrderRow(updatedRes.recordset[0], itemsRes.recordset),
+      order: mapOrderRow(updatedRows[0], itemRows),
     };
   } catch (err) {
-    if (txBegun) {
-      try {
-        await transaction.rollback();
-      } catch (_) {
-        // ignore rollback error
-      }
-    }
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 }
 
@@ -967,64 +990,57 @@ async function deleteOrder(idOrCode) {
     throw new AppError('Mã đơn hàng không hợp lệ.', 400);
   }
 
+  const numericId = /^\d+$/.test(idParam) ? Number(idParam) : -1;
   const pool = await poolPromise;
-  const transaction = new sql.Transaction(pool);
-  let txBegun = false;
+  const conn = await pool.getConnection();
 
   try {
-    await transaction.begin();
-    txBegun = true;
+    await conn.beginTransaction();
 
-    const existingRes = await new sql.Request(transaction)
-      .input('code', sql.NVarChar(60), idParam)
-      .query(`
-        SELECT TOP 1 *
-        FROM dbo.Orders WITH (UPDLOCK, HOLDLOCK)
-        WHERE UPPER(OrderCode) = UPPER(@code)
-           OR OrderId = TRY_CAST(@code AS INT)
-      `);
+    const [existingRows] = await conn.query(
+      `
+        SELECT *
+        FROM Orders
+        WHERE UPPER(OrderCode) = UPPER(?)
+           OR OrderId = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [idParam, numericId]
+    );
 
-    if (existingRes.recordset.length === 0) {
+    if (existingRows.length === 0) {
       throw new AppError('Không tìm thấy đơn hàng.', 404);
     }
 
-    const order = existingRes.recordset[0];
+    const order = existingRows[0];
 
     if (order.OrderStatus !== 'cancelled') {
-      const itemsRes = await new sql.Request(transaction)
-        .input('orderId', sql.Int, order.OrderId)
-        .query('SELECT ProductId, Quantity FROM dbo.OrderItems WHERE OrderId = @orderId');
+      const [itemRows] = await conn.query(
+        'SELECT ProductId, Quantity FROM OrderItems WHERE OrderId = ?',
+        [order.OrderId]
+      );
 
-      const aggregatedItems = aggregateQuantitiesByProductId(itemsRes.recordset);
+      const aggregatedItems = aggregateQuantitiesByProductId(itemRows);
       for (const [pid, qty] of aggregatedItems) {
-        await new sql.Request(transaction)
-          .input('pid', sql.NVarChar(60), pid)
-          .input('qty', sql.Int, qty)
-          .query(`
-            UPDATE dbo.Products
-            SET StockCount = StockCount + @qty
-            WHERE ProductId = @pid
-          `);
+        // eslint-disable-next-line no-await-in-loop
+        await conn.query(
+          'UPDATE Products SET StockCount = StockCount + ? WHERE ProductId = ?',
+          [qty, pid]
+        );
       }
     }
 
-    await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .query('DELETE FROM dbo.Orders WHERE OrderId = @orderId');
+    await conn.query('DELETE FROM Orders WHERE OrderId = ?', [order.OrderId]);
 
-    await transaction.commit();
-    txBegun = false;
+    await conn.commit();
 
     return { message: 'Đã xóa đơn hàng.' };
   } catch (err) {
-    if (txBegun) {
-      try {
-        await transaction.rollback();
-      } catch (_) {
-        // ignore rollback error
-      }
-    }
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 }
 
@@ -1033,88 +1049,90 @@ async function listOrderItems({ orderId } = {}) {
 
   if (orderId !== undefined && orderId !== null && String(orderId).trim() !== '') {
     const cleanOid = String(orderId).trim().replace(/^#/, '');
-    const res = await pool
-      .request()
-      .input('oid', sql.NVarChar(60), cleanOid)
-      .query(`
+    const numericId = /^\d+$/.test(cleanOid) ? Number(cleanOid) : -1;
+    const [rows] = await pool.query(
+      `
         SELECT oi.*
-        FROM dbo.OrderItems oi
-        INNER JOIN dbo.Orders o ON o.OrderId = oi.OrderId
-        WHERE o.OrderId = TRY_CAST(@oid AS INT)
-           OR UPPER(o.OrderCode) = UPPER(@oid)
+        FROM OrderItems oi
+        INNER JOIN Orders o ON o.OrderId = oi.OrderId
+        WHERE o.OrderId = ?
+           OR UPPER(o.OrderCode) = UPPER(?)
         ORDER BY oi.OrderItemId DESC
-      `);
-    return res.recordset;
+      `,
+      [numericId, cleanOid]
+    );
+    return rows;
   }
 
-  const res = await pool
-    .request()
-    .query('SELECT * FROM dbo.OrderItems ORDER BY OrderItemId DESC');
-  return res.recordset;
+  const [rows] = await pool.query(
+    'SELECT * FROM OrderItems ORDER BY OrderItemId DESC'
+  );
+  return rows;
 }
 
 async function getAnalyticsOverview() {
   const pool = await poolPromise;
 
   const [
-    orderStatsRes,
-    bookingStatsRes,
-    lowStockRowsRes,
-    monthlyTrendRes,
-    topProductsRes,
+    [orderStatsRows],
+    [bookingStatsRows],
+    [lowStockRows],
+    [monthlyTrendRows],
+    [topProductsRows],
   ] = await Promise.all([
-    pool.request().query(`
+    pool.query(`
       SELECT
         COUNT(*) AS totalOrders,
-        ISNULL(SUM(CASE WHEN OrderStatus = N'pending' THEN 1 ELSE 0 END), 0) AS pendingOrders,
-        ISNULL(SUM(CASE WHEN OrderStatus = N'completed' THEN 1 ELSE 0 END), 0) AS completedOrders,
-        ISNULL(SUM(CASE WHEN OrderStatus <> N'cancelled' AND PaymentMethod IN (N'vnpay', N'momo') THEN TotalAmount ELSE 0 END), 0) AS transferRevenue,
-        ISNULL(SUM(CASE WHEN OrderStatus <> N'cancelled' AND PaymentMethod = N'cod' THEN TotalAmount ELSE 0 END), 0) AS cashRevenue,
-        ISNULL(SUM(CASE WHEN OrderStatus = N'completed' THEN TotalAmount ELSE 0 END), 0) AS collectedRevenue
-      FROM dbo.Orders
+        IFNULL(SUM(CASE WHEN OrderStatus = 'pending' THEN 1 ELSE 0 END), 0) AS pendingOrders,
+        IFNULL(SUM(CASE WHEN OrderStatus = 'completed' THEN 1 ELSE 0 END), 0) AS completedOrders,
+        IFNULL(SUM(CASE WHEN OrderStatus <> 'cancelled' AND PaymentMethod IN ('vnpay', 'momo') THEN TotalAmount ELSE 0 END), 0) AS transferRevenue,
+        IFNULL(SUM(CASE WHEN OrderStatus <> 'cancelled' AND PaymentMethod = 'cod' THEN TotalAmount ELSE 0 END), 0) AS cashRevenue,
+        IFNULL(SUM(CASE WHEN OrderStatus = 'completed' THEN TotalAmount ELSE 0 END), 0) AS collectedRevenue
+      FROM Orders
     `),
-    pool.request().query(`
+    pool.query(`
       SELECT
         COUNT(*) AS totalBookings,
-        ISNULL(SUM(CASE WHEN Status = N'upcoming' THEN 1 ELSE 0 END), 0) AS upcomingBookings,
-        ISNULL(SUM(CASE WHEN Status = N'completed' THEN Price ELSE 0 END), 0) AS spaRevenue
-      FROM dbo.ServiceBookings
+        IFNULL(SUM(CASE WHEN Status = 'upcoming' THEN 1 ELSE 0 END), 0) AS upcomingBookings,
+        IFNULL(SUM(CASE WHEN Status = 'completed' THEN Price ELSE 0 END), 0) AS spaRevenue
+      FROM ServiceBookings
     `),
-    pool.request().query(`
+    pool.query(`
       SELECT *
-      FROM dbo.Products
+      FROM Products
       WHERE IsActive = 1 AND StockCount <= 15
       ORDER BY StockCount ASC, CreatedAt DESC
     `),
-    pool.request().query(`
+    pool.query(`
       SELECT
         MONTH(CreatedAt) AS monthNum,
         COUNT(*) AS orders,
-        ISNULL(SUM(CASE WHEN PaymentMethod IN (N'vnpay', N'momo') THEN TotalAmount ELSE 0 END), 0) AS transfer,
-        ISNULL(SUM(CASE WHEN PaymentMethod = N'cod' THEN TotalAmount ELSE 0 END), 0) AS cash,
-        ISNULL(SUM(TotalAmount), 0) AS revenue
-      FROM dbo.Orders
-      WHERE OrderStatus <> N'cancelled' AND YEAR(CreatedAt) = YEAR(SYSUTCDATETIME())
+        IFNULL(SUM(CASE WHEN PaymentMethod IN ('vnpay', 'momo') THEN TotalAmount ELSE 0 END), 0) AS transfer,
+        IFNULL(SUM(CASE WHEN PaymentMethod = 'cod' THEN TotalAmount ELSE 0 END), 0) AS cash,
+        IFNULL(SUM(TotalAmount), 0) AS revenue
+      FROM Orders
+      WHERE OrderStatus <> 'cancelled' AND YEAR(CreatedAt) = YEAR(UTC_TIMESTAMP())
       GROUP BY MONTH(CreatedAt)
       ORDER BY monthNum ASC
     `),
-    pool.request().query(`
-      SELECT TOP 5
+    pool.query(`
+      SELECT
         COALESCE(oi.ProductId, oi.ProductName) AS productKey,
         MAX(oi.ProductId) AS productId,
         MAX(oi.ProductName) AS productName,
         MAX(oi.ProductImage) AS productImage,
         SUM(oi.Quantity) AS soldQuantity,
         SUM(oi.UnitPrice * oi.Quantity) AS totalRevenue
-      FROM dbo.OrderItems oi
-      INNER JOIN dbo.Orders o ON o.OrderId = oi.OrderId
-      WHERE o.OrderStatus <> N'cancelled'
+      FROM OrderItems oi
+      INNER JOIN Orders o ON o.OrderId = oi.OrderId
+      WHERE o.OrderStatus <> 'cancelled'
       GROUP BY COALESCE(oi.ProductId, oi.ProductName)
       ORDER BY soldQuantity DESC, totalRevenue DESC
+      LIMIT 5
     `),
   ]);
 
-  const rawOrders = orderStatsRes.recordset[0] || {};
+  const rawOrders = orderStatsRows[0] || {};
   const orders = {
     totalOrders: Number(rawOrders.totalOrders || 0),
     pendingOrders: Number(rawOrders.pendingOrders || 0),
@@ -1124,21 +1142,19 @@ async function getAnalyticsOverview() {
     collectedRevenue: Number(rawOrders.collectedRevenue || 0),
   };
 
-  const rawBookings = bookingStatsRes.recordset[0] || {};
+  const rawBookings = bookingStatsRows[0] || {};
   const bookings = {
     totalBookings: Number(rawBookings.totalBookings || 0),
     upcomingBookings: Number(rawBookings.upcomingBookings || 0),
     spaRevenue: Number(rawBookings.spaRevenue || 0),
   };
 
-  const lowStockProducts = lowStockRowsRes.recordset.map((row) =>
-    mapProductRow(row, [])
-  );
+  const lowStockProducts = lowStockRows.map((row) => mapProductRow(row, []));
   const lowStockCount = lowStockProducts.length;
   const totalCombinedRevenue =
     Number(orders.collectedRevenue || 0) + Number(bookings.spaRevenue || 0);
 
-  const topProducts = topProductsRes.recordset.map((r) => ({
+  const topProducts = topProductsRows.map((r) => ({
     id: r.productId || r.productKey,
     productId: r.productId || null,
     name: r.productName,
@@ -1149,7 +1165,7 @@ async function getAnalyticsOverview() {
     revenue: Number(r.totalRevenue || 0),
   }));
 
-  const monthlyTrend = monthlyTrendRes.recordset.map((m) => ({
+  const monthlyTrend = monthlyTrendRows.map((m) => ({
     monthNum: Number(m.monthNum),
     orders: Number(m.orders || 0),
     transfer: Number(m.transfer || 0),
@@ -1191,33 +1207,30 @@ async function getAnalyticsDaily(params = {}) {
   }
 
   const pool = await poolPromise;
-  const [ordersRes, spaRes] = await Promise.all([
-    pool
-      .request()
-      .input('date', sql.VarChar(10), dateStr)
-      .input('lo', sql.VarChar(5), lo)
-      .input('hi', sql.VarChar(5), hi)
-      .query(`
+  const [[orderRows], [spaRows]] = await Promise.all([
+    pool.query(
+      `
         SELECT *
-        FROM dbo.Orders
-        WHERE CAST(CreatedAt AS DATE) = CAST(@date AS DATE)
-          AND FORMAT(CreatedAt, 'HH:mm') BETWEEN @lo AND @hi
+        FROM Orders
+        WHERE DATE(CreatedAt) = CAST(? AS DATE)
+          AND DATE_FORMAT(CreatedAt, '%H:%i') BETWEEN ? AND ?
         ORDER BY CreatedAt DESC, OrderId DESC
-      `),
-    pool
-      .request()
-      .input('date', sql.VarChar(10), dateStr)
-      .query(`
+      `,
+      [dateStr, lo, hi]
+    ),
+    pool.query(
+      `
         SELECT
           COUNT(*) AS spaBookings,
-          ISNULL(SUM(Price), 0) AS spaRevenue
-        FROM dbo.ServiceBookings
-        WHERE BookingDate = CAST(@date AS DATE)
-          AND Status = N'completed'
-      `),
+          IFNULL(SUM(Price), 0) AS spaRevenue
+        FROM ServiceBookings
+        WHERE BookingDate = CAST(? AS DATE)
+          AND Status = 'completed'
+      `,
+      [dateStr]
+    ),
   ]);
 
-  const orderRows = ordersRes.recordset;
   const invoices = await attachItemsToOrders(pool, orderRows);
 
   const nonCancelled = orderRows.filter((r) => r.OrderStatus !== 'cancelled');
@@ -1230,7 +1243,7 @@ async function getAnalyticsDaily(params = {}) {
   const total = transfer + cash;
   const orders = nonCancelled.length;
 
-  const spaRow = spaRes.recordset[0] || {};
+  const spaRow = spaRows[0] || {};
   const spaBookings = Number(spaRow.spaBookings || 0);
   const spaRevenue = Number(spaRow.spaRevenue || 0);
 
@@ -1280,41 +1293,41 @@ async function getAnalyticsPeriod(params = {}) {
   const pool = await poolPromise;
 
   if (period === 'past-months') {
-    const [orderMonthRes, spaMonthRes] = await Promise.all([
-      pool
-        .request()
-        .input('year', sql.Int, year)
-        .query(`
+    const [[orderMonthRows], [spaMonthRows]] = await Promise.all([
+      pool.query(
+        `
           SELECT
             MONTH(CreatedAt) AS monthNum,
             COUNT(*) AS orders,
-            ISNULL(SUM(CASE WHEN PaymentMethod IN (N'vnpay', N'momo') THEN TotalAmount ELSE 0 END), 0) AS transfer,
-            ISNULL(SUM(CASE WHEN PaymentMethod = N'cod' THEN TotalAmount ELSE 0 END), 0) AS cash,
-            ISNULL(SUM(TotalAmount), 0) AS orderRevenue
-          FROM dbo.Orders
-          WHERE OrderStatus <> N'cancelled' AND YEAR(CreatedAt) = @year
+            IFNULL(SUM(CASE WHEN PaymentMethod IN ('vnpay', 'momo') THEN TotalAmount ELSE 0 END), 0) AS transfer,
+            IFNULL(SUM(CASE WHEN PaymentMethod = 'cod' THEN TotalAmount ELSE 0 END), 0) AS cash,
+            IFNULL(SUM(TotalAmount), 0) AS orderRevenue
+          FROM Orders
+          WHERE OrderStatus <> 'cancelled' AND YEAR(CreatedAt) = ?
           GROUP BY MONTH(CreatedAt)
-        `),
-      pool
-        .request()
-        .input('year', sql.Int, year)
-        .query(`
+        `,
+        [year]
+      ),
+      pool.query(
+        `
           SELECT
             MONTH(BookingDate) AS monthNum,
-            ISNULL(SUM(Price), 0) AS spaRevenue
-          FROM dbo.ServiceBookings
-          WHERE Status = N'completed' AND YEAR(BookingDate) = @year
+            IFNULL(SUM(Price), 0) AS spaRevenue
+          FROM ServiceBookings
+          WHERE Status = 'completed' AND YEAR(BookingDate) = ?
           GROUP BY MONTH(BookingDate)
-        `),
+        `,
+        [year]
+      ),
     ]);
 
     const ordByMonth = {};
-    for (const r of orderMonthRes.recordset) {
+    for (const r of orderMonthRows) {
       ordByMonth[Number(r.monthNum)] = r;
     }
 
     const spaByMonth = {};
-    for (const r of spaMonthRes.recordset) {
+    for (const r of spaMonthRows) {
       spaByMonth[Number(r.monthNum)] = r;
     }
 
@@ -1360,45 +1373,43 @@ async function getAnalyticsPeriod(params = {}) {
   const startYear = year - 2;
   const endYear = year;
 
-  const [orderYearRes, spaYearRes] = await Promise.all([
-    pool
-      .request()
-      .input('startYear', sql.Int, startYear)
-      .input('endYear', sql.Int, endYear)
-      .query(`
+  const [[orderYearRows], [spaYearRows]] = await Promise.all([
+    pool.query(
+      `
         SELECT
           YEAR(CreatedAt) AS yearNum,
           COUNT(*) AS orders,
-          ISNULL(SUM(CASE WHEN PaymentMethod IN (N'vnpay', N'momo') THEN TotalAmount ELSE 0 END), 0) AS transfer,
-          ISNULL(SUM(CASE WHEN PaymentMethod = N'cod' THEN TotalAmount ELSE 0 END), 0) AS cash,
-          ISNULL(SUM(TotalAmount), 0) AS orderRevenue
-        FROM dbo.Orders
-        WHERE OrderStatus <> N'cancelled'
-          AND YEAR(CreatedAt) BETWEEN @startYear AND @endYear
+          IFNULL(SUM(CASE WHEN PaymentMethod IN ('vnpay', 'momo') THEN TotalAmount ELSE 0 END), 0) AS transfer,
+          IFNULL(SUM(CASE WHEN PaymentMethod = 'cod' THEN TotalAmount ELSE 0 END), 0) AS cash,
+          IFNULL(SUM(TotalAmount), 0) AS orderRevenue
+        FROM Orders
+        WHERE OrderStatus <> 'cancelled'
+          AND YEAR(CreatedAt) BETWEEN ? AND ?
         GROUP BY YEAR(CreatedAt)
-      `),
-    pool
-      .request()
-      .input('startYear', sql.Int, startYear)
-      .input('endYear', sql.Int, endYear)
-      .query(`
+      `,
+      [startYear, endYear]
+    ),
+    pool.query(
+      `
         SELECT
           YEAR(BookingDate) AS yearNum,
-          ISNULL(SUM(Price), 0) AS spaRevenue
-        FROM dbo.ServiceBookings
-        WHERE Status = N'completed'
-          AND YEAR(BookingDate) BETWEEN @startYear AND @endYear
+          IFNULL(SUM(Price), 0) AS spaRevenue
+        FROM ServiceBookings
+        WHERE Status = 'completed'
+          AND YEAR(BookingDate) BETWEEN ? AND ?
         GROUP BY YEAR(BookingDate)
-      `),
+      `,
+      [startYear, endYear]
+    ),
   ]);
 
   const ordByYear = {};
-  for (const r of orderYearRes.recordset) {
+  for (const r of orderYearRows) {
     ordByYear[Number(r.yearNum)] = r;
   }
 
   const spaByYear = {};
-  for (const r of spaYearRes.recordset) {
+  for (const r of spaYearRows) {
     spaByYear[Number(r.yearNum)] = r;
   }
 

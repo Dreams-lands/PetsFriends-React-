@@ -1,6 +1,6 @@
 require('dotenv').config();
 const bcrypt = require('bcryptjs');
-const { sql, poolPromise } = require('../config/db');
+const { poolPromise } = require('../config/db');
 
 const ACCOUNTS = [
   { name: 'Admin', email: 'admin@petsfriends.com', password: 'Admin@123', role: 'admin' },
@@ -12,20 +12,23 @@ const ACCOUNTS = [
   try {
     const pool = await poolPromise;
     for (const a of ACCOUNTS) {
+      // eslint-disable-next-line no-await-in-loop
       const hash = await bcrypt.hash(a.password, 10);
-      await pool.request()
-        .input('name', sql.NVarChar(100), a.name)
-        .input('email', sql.NVarChar(150), a.email)
-        .input('hash', sql.NVarChar(255), hash)
-        .input('role', sql.NVarChar(20), a.role)
-        .query(`
-          IF EXISTS (SELECT 1 FROM Users WHERE Email = @email)
-            UPDATE Users SET Name = @name, PasswordHash = @hash, Role = @role WHERE Email = @email
-          ELSE
-            INSERT INTO Users (Name, Email, PasswordHash, Role) VALUES (@name, @email, @hash, @role)
-        `);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(
+        `
+          INSERT INTO Users (FullName, Email, PasswordHash, Role, Status)
+          VALUES (?, ?, ?, ?, 'active')
+          ON DUPLICATE KEY UPDATE
+            FullName = VALUES(FullName),
+            PasswordHash = VALUES(PasswordHash),
+            Role = VALUES(Role)
+        `,
+        [a.name, a.email, hash, a.role]
+      );
       console.log('OK:', a.role, a.email, '/', a.password);
     }
+    await pool.end();
     process.exit(0);
   } catch (err) {
     console.error('Loi:', err.message);

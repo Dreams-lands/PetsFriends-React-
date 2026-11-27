@@ -365,7 +365,7 @@ export const PaymentQrModal: React.FC<PaymentQrModalProps> = ({
                   <strong className={isDark ? 'text-emerald-200' : 'text-emerald-900'}>
                     Xác nhận đã quét QR
                   </strong>{' '}
-                  bên dưới để chốt giao dịch vào SQL Server.
+                  bên dưới để chốt giao dịch vào MySQL.
                 </span>
               </div>
             )}

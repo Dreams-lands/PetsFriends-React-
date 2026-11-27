@@ -1,4 +1,4 @@
-const { sql, poolPromise } = require('../../../api/db');
+const { poolPromise } = require('../../../api/db');
 const { mapProductRow, mapReviewRow, parseMoneyNumber } = require('../utils/mappers');
 const { AppError } = require('../services/userService');
 
@@ -41,21 +41,18 @@ async function attachReviewsToProducts(pool, productRows) {
   const reviewsByProduct = {};
 
   if (uniqueProductIds.length > 0) {
-    const revReq = pool.request();
-    const placeholders = uniqueProductIds.map((pid, idx) => {
-      const paramName = `pid${idx}`;
-      revReq.input(paramName, sql.NVarChar(60), pid);
-      return `@${paramName}`;
-    });
+    const placeholders = uniqueProductIds.map(() => '?').join(', ');
+    const [revRows] = await pool.query(
+      `
+        SELECT *
+        FROM ProductReviews
+        WHERE ProductId IN (${placeholders})
+        ORDER BY CreatedAt DESC, ReviewId DESC
+      `,
+      uniqueProductIds
+    );
 
-    const revRes = await revReq.query(`
-      SELECT *
-      FROM dbo.ProductReviews
-      WHERE ProductId IN (${placeholders.join(', ')})
-      ORDER BY CreatedAt DESC, ReviewId DESC
-    `);
-
-    for (const r of revRes.recordset) {
+    for (const r of revRows) {
       if (!reviewsByProduct[r.ProductId]) {
         reviewsByProduct[r.ProductId] = [];
       }
@@ -69,24 +66,24 @@ async function attachReviewsToProducts(pool, productRows) {
 }
 
 // ============================================================================
-// 1. CATEGORIES (dbo.Categories)
+// 1. CATEGORIES (Categories)
 // ============================================================================
 
 async function listCategories() {
   const pool = await poolPromise;
-  const result = await pool.request().query(`
+  const [rows] = await pool.query(`
     SELECT
       c.CategoryCode,
       c.Name,
       COUNT(p.ProductId) AS ProductCount
-    FROM dbo.Categories c
-    LEFT JOIN dbo.Products p
+    FROM Categories c
+    LEFT JOIN Products p
       ON p.CategoryCode = c.CategoryCode AND p.IsActive = 1
     GROUP BY c.CategoryCode, c.Name
     ORDER BY c.CategoryCode ASC
   `);
 
-  return result.recordset.map(mapCategoryRow);
+  return rows.map(mapCategoryRow);
 }
 
 async function getCategoryByCode(code) {
@@ -96,26 +93,26 @@ async function getCategoryByCode(code) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('code', sql.NVarChar(30), cleanCode)
-    .query(`
+  const [rows] = await pool.query(
+    `
       SELECT
         c.CategoryCode,
         c.Name,
         COUNT(p.ProductId) AS ProductCount
-      FROM dbo.Categories c
-      LEFT JOIN dbo.Products p
+      FROM Categories c
+      LEFT JOIN Products p
         ON p.CategoryCode = c.CategoryCode AND p.IsActive = 1
-      WHERE c.CategoryCode = @code
+      WHERE c.CategoryCode = ?
       GROUP BY c.CategoryCode, c.Name
-    `);
+    `,
+    [cleanCode]
+  );
 
-  if (result.recordset.length === 0) {
+  if (rows.length === 0) {
     throw new AppError('Không tìm thấy danh mục sản phẩm.', 404);
   }
 
-  return mapCategoryRow(result.recordset[0]);
+  return mapCategoryRow(rows[0]);
 }
 
 async function createCategory(payload = {}) {
@@ -130,26 +127,25 @@ async function createCategory(payload = {}) {
   }
 
   const pool = await poolPromise;
-  const dupRes = await pool
-    .request()
-    .input('code', sql.NVarChar(30), code)
-    .query('SELECT CategoryCode FROM dbo.Categories WHERE CategoryCode = @code');
+  const [dupRows] = await pool.query(
+    'SELECT CategoryCode FROM Categories WHERE CategoryCode = ?',
+    [code]
+  );
 
-  if (dupRes.recordset.length > 0) {
+  if (dupRows.length > 0) {
     throw new AppError('Mã danh mục đã tồn tại.', 409);
   }
 
-  const insertRes = await pool
-    .request()
-    .input('code', sql.NVarChar(30), code)
-    .input('name', sql.NVarChar(100), name)
-    .query(`
-      INSERT INTO dbo.Categories (CategoryCode, Name)
-      OUTPUT INSERTED.*
-      VALUES (@code, @name)
-    `);
+  await pool.query(
+    'INSERT INTO Categories (CategoryCode, Name) VALUES (?, ?)',
+    [code, name.slice(0, 100)]
+  );
 
-  return mapCategoryRow({ ...insertRes.recordset[0], ProductCount: 0 });
+  const [insertedRows] = await pool.query(
+    'SELECT * FROM Categories WHERE CategoryCode = ?',
+    [code]
+  );
+  return mapCategoryRow({ ...insertedRows[0], ProductCount: 0 });
 }
 
 async function updateCategory(code, payload = {}) {
@@ -164,13 +160,12 @@ async function updateCategory(code, payload = {}) {
   }
 
   const pool = await poolPromise;
-  const updateRes = await pool
-    .request()
-    .input('code', sql.NVarChar(30), cleanCode)
-    .input('name', sql.NVarChar(100), name)
-    .query('UPDATE dbo.Categories SET Name = @name WHERE CategoryCode = @code');
+  const [updateRes] = await pool.query(
+    'UPDATE Categories SET Name = ? WHERE CategoryCode = ?',
+    [name.slice(0, 100), cleanCode]
+  );
 
-  if (updateRes.rowsAffected[0] === 0) {
+  if (updateRes.affectedRows === 0) {
     throw new AppError('Không tìm thấy danh mục sản phẩm.', 404);
   }
 
@@ -184,34 +179,31 @@ async function deleteCategory(code) {
   }
 
   const pool = await poolPromise;
-  const existRes = await pool
-    .request()
-    .input('code', sql.NVarChar(30), cleanCode)
-    .query('SELECT CategoryCode FROM dbo.Categories WHERE CategoryCode = @code');
+  const [existRows] = await pool.query(
+    'SELECT CategoryCode FROM Categories WHERE CategoryCode = ?',
+    [cleanCode]
+  );
 
-  if (existRes.recordset.length === 0) {
+  if (existRows.length === 0) {
     throw new AppError('Không tìm thấy danh mục sản phẩm.', 404);
   }
 
-  const countRes = await pool
-    .request()
-    .input('code', sql.NVarChar(30), cleanCode)
-    .query('SELECT COUNT(*) AS cnt FROM dbo.Products WHERE CategoryCode = @code');
+  const [countRows] = await pool.query(
+    'SELECT COUNT(*) AS cnt FROM Products WHERE CategoryCode = ?',
+    [cleanCode]
+  );
 
-  if (Number(countRes.recordset[0].cnt) > 0) {
+  if (Number(countRows[0].cnt) > 0) {
     throw new AppError('Danh mục đang chứa sản phẩm, không thể xóa.', 409);
   }
 
-  await pool
-    .request()
-    .input('code', sql.NVarChar(30), cleanCode)
-    .query('DELETE FROM dbo.Categories WHERE CategoryCode = @code');
+  await pool.query('DELETE FROM Categories WHERE CategoryCode = ?', [cleanCode]);
 
   return { message: 'Đã xóa danh mục sản phẩm.' };
 }
 
 // ============================================================================
-// 2. PRODUCTS (dbo.Products)
+// 2. PRODUCTS (Products)
 // ============================================================================
 
 async function listProducts(queryParams = {}) {
@@ -232,21 +224,21 @@ async function listProducts(queryParams = {}) {
   } = queryParams;
 
   const pool = await poolPromise;
-  const request = pool.request();
-  let query = 'SELECT * FROM dbo.Products WHERE 1=1';
+  let query = 'SELECT * FROM Products WHERE 1=1';
+  const params = [];
 
   if (String(includeInactive) !== 'true') {
     query += ' AND IsActive = 1';
   }
 
   if (category && category !== 'all') {
-    query += ' AND CategoryCode = @category';
-    request.input('category', sql.NVarChar(30), String(category).trim());
+    query += ' AND CategoryCode = ?';
+    params.push(String(category).trim());
   }
 
   if (petType && petType !== 'all') {
-    query += " AND (PetType = @petType OR PetType = N'both')";
-    request.input('petType', sql.NVarChar(10), String(petType).trim());
+    query += " AND (PetType = ? OR PetType = 'both')";
+    params.push(String(petType).trim());
   }
 
   const rawSub = subTypes !== undefined ? subTypes : subType;
@@ -258,15 +250,12 @@ async function listProducts(queryParams = {}) {
       .filter((s) => s && s !== 'all');
 
     if (parsedSubs.length === 1) {
-      query += ' AND SubType = @subType0';
-      request.input('subType0', sql.NVarChar(100), parsedSubs[0]);
+      query += ' AND SubType = ?';
+      params.push(parsedSubs[0]);
     } else if (parsedSubs.length > 1) {
-      const subPlaceholders = parsedSubs.map((val, idx) => {
-        const key = `subType${idx}`;
-        request.input(key, sql.NVarChar(100), val);
-        return `@${key}`;
-      });
-      query += ` AND SubType IN (${subPlaceholders.join(', ')})`;
+      const subPlaceholders = parsedSubs.map(() => '?').join(', ');
+      query += ` AND SubType IN (${subPlaceholders})`;
+      params.push(...parsedSubs);
     }
   }
 
@@ -275,8 +264,8 @@ async function listProducts(queryParams = {}) {
     if (Number.isNaN(minVal)) {
       throw new AppError('Giá tối thiểu không hợp lệ.', 400);
     }
-    query += ' AND Price >= @minPrice';
-    request.input('minPrice', sql.Decimal(18, 0), minVal);
+    query += ' AND Price >= ?';
+    params.push(minVal);
   }
 
   if (maxPrice !== undefined && maxPrice !== null && String(maxPrice).trim() !== '') {
@@ -284,8 +273,8 @@ async function listProducts(queryParams = {}) {
     if (Number.isNaN(maxVal)) {
       throw new AppError('Giá tối đa không hợp lệ.', 400);
     }
-    query += ' AND Price <= @maxPrice';
-    request.input('maxPrice', sql.Decimal(18, 0), maxVal);
+    query += ' AND Price <= ?';
+    params.push(maxVal);
   }
 
   if (String(promoOnly) === 'true') {
@@ -305,16 +294,17 @@ async function listProducts(queryParams = {}) {
       Number.isFinite(parsedThreshold) && parsedThreshold >= 0
         ? Math.floor(parsedThreshold)
         : 15;
-    query += ' AND StockCount <= @threshold';
-    request.input('threshold', sql.Int, safeThreshold);
+    query += ' AND StockCount <= ?';
+    params.push(safeThreshold);
   }
 
   if (search && String(search).trim()) {
+    const q = `%${String(search).trim()}%`;
     query += ` AND (
-      Name LIKE @search OR Brand LIKE @search OR ProductId LIKE @search
-      OR ShortDesc LIKE @search OR SubType LIKE @search
+      Name LIKE ? OR Brand LIKE ? OR ProductId LIKE ?
+      OR ShortDesc LIKE ? OR SubType LIKE ?
     )`;
-    request.input('search', sql.NVarChar(220), `%${String(search).trim()}%`);
+    params.push(q, q, q, q, q);
   }
 
   if (sort === 'price-asc') {
@@ -329,8 +319,8 @@ async function listProducts(queryParams = {}) {
     query += ' ORDER BY IsFeatured DESC, CreatedAt DESC';
   }
 
-  const prodRes = await request.query(query);
-  let items = await attachReviewsToProducts(pool, prodRes.recordset);
+  const [prodRows] = await pool.query(query, params);
+  let items = await attachReviewsToProducts(pool, prodRows);
 
   if (sort === 'rating') {
     items = items.sort((a, b) => b.rating - a.rating || b.reviewCount - a.reviewCount);
@@ -383,16 +373,13 @@ async function getProductById(productId) {
   }
 
   const pool = await poolPromise;
-  const prodRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query('SELECT * FROM dbo.Products WHERE ProductId = @id');
+  const [prodRows] = await pool.query('SELECT * FROM Products WHERE ProductId = ?', [id]);
 
-  if (prodRes.recordset.length === 0) {
+  if (prodRows.length === 0) {
     throw new AppError('Không tìm thấy sản phẩm.', 404);
   }
 
-  const items = await attachReviewsToProducts(pool, [prodRes.recordset[0]]);
+  const items = await attachReviewsToProducts(pool, [prodRows[0]]);
   return items[0];
 }
 
@@ -460,53 +447,55 @@ async function createProduct(body = {}) {
 
   const pool = await poolPromise;
 
-  const dupRes = await pool
-    .request()
-    .input('productId', sql.NVarChar(60), productId)
-    .query('SELECT ProductId FROM dbo.Products WHERE ProductId = @productId');
+  const [dupRows] = await pool.query(
+    'SELECT ProductId FROM Products WHERE ProductId = ?',
+    [productId]
+  );
 
-  if (dupRes.recordset.length > 0) {
+  if (dupRows.length > 0) {
     throw new AppError('Mã SKU sản phẩm đã tồn tại.', 409);
   }
 
-  const catRes = await pool
-    .request()
-    .input('categoryCode', sql.NVarChar(30), categoryCode)
-    .query('SELECT CategoryCode FROM dbo.Categories WHERE CategoryCode = @categoryCode');
+  const [catRows] = await pool.query(
+    'SELECT CategoryCode FROM Categories WHERE CategoryCode = ?',
+    [categoryCode]
+  );
 
-  if (catRes.recordset.length === 0) {
+  if (catRows.length === 0) {
     throw new AppError('Danh mục sản phẩm không hợp lệ.', 400);
   }
 
-  const result = await pool
-    .request()
-    .input('productId', sql.NVarChar(60), productId)
-    .input('brand', sql.NVarChar(100), brand)
-    .input('name', sql.NVarChar(200), name)
-    .input('shortDesc', sql.NVarChar(400), shortDesc)
-    .input('categoryCode', sql.NVarChar(30), categoryCode)
-    .input('subType', sql.NVarChar(100), subType)
-    .input('petType', sql.NVarChar(10), petType)
-    .input('sizes', sql.NVarChar(200), sizesStr)
-    .input('price', sql.Decimal(18, 0), priceNum)
-    .input('originalPrice', sql.Decimal(18, 0), originalPrice)
-    .input('primaryImage', sql.NVarChar(500), primaryImage)
-    .input('stockCount', sql.Int, stockCount)
-    .input('isFeatured', sql.Bit, body.isFeatured ? 1 : 0)
-    .input('isActive', sql.Bit, body.isActive === false ? 0 : 1)
-    .query(`
-      INSERT INTO dbo.Products (
+  await pool.query(
+    `
+      INSERT INTO Products (
         ProductId, Brand, Name, ShortDesc, CategoryCode, SubType,
         PetType, Sizes, Price, OriginalPrice, PrimaryImage, StockCount, IsFeatured, IsActive
       )
-      OUTPUT INSERTED.*
-      VALUES (
-        @productId, @brand, @name, @shortDesc, @categoryCode, @subType,
-        @petType, @sizes, @price, @originalPrice, @primaryImage, @stockCount, @isFeatured, @isActive
-      )
-    `);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      productId.slice(0, 60),
+      brand.slice(0, 100),
+      name.slice(0, 200),
+      shortDesc ? shortDesc.slice(0, 400) : null,
+      categoryCode.slice(0, 30),
+      subType ? subType.slice(0, 100) : null,
+      petType,
+      sizesStr.slice(0, 200),
+      priceNum,
+      originalPrice,
+      primaryImage.slice(0, 500),
+      stockCount,
+      body.isFeatured ? 1 : 0,
+      body.isActive === false ? 0 : 1,
+    ]
+  );
 
-  return mapProductRow(result.recordset[0], []);
+  const [insertedRows] = await pool.query(
+    'SELECT * FROM Products WHERE ProductId = ?',
+    [productId]
+  );
+  return mapProductRow(insertedRows[0], []);
 }
 
 async function updateProduct(productId, body = {}) {
@@ -516,16 +505,16 @@ async function updateProduct(productId, body = {}) {
   }
 
   const pool = await poolPromise;
-  const existingRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query('SELECT * FROM dbo.Products WHERE ProductId = @id');
+  const [existingRows] = await pool.query(
+    'SELECT * FROM Products WHERE ProductId = ?',
+    [id]
+  );
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy sản phẩm để cập nhật.', 404);
   }
 
-  const existing = existingRes.recordset[0];
+  const existing = existingRows[0];
 
   const mergedBrand =
     body.brand !== undefined
@@ -556,12 +545,12 @@ async function updateProduct(productId, body = {}) {
     throw new AppError('Danh mục sản phẩm không hợp lệ.', 400);
   }
 
-  const catCheck = await pool
-    .request()
-    .input('categoryCode', sql.NVarChar(30), mergedCategoryCode)
-    .query('SELECT CategoryCode FROM dbo.Categories WHERE CategoryCode = @categoryCode');
+  const [catCheck] = await pool.query(
+    'SELECT CategoryCode FROM Categories WHERE CategoryCode = ?',
+    [mergedCategoryCode]
+  );
 
-  if (catCheck.recordset.length === 0) {
+  if (catCheck.length === 0) {
     throw new AppError('Danh mục sản phẩm không hợp lệ.', 400);
   }
 
@@ -656,42 +645,46 @@ async function updateProduct(productId, body = {}) {
         ? 1
         : 0;
 
-  const updateRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .input('brand', sql.NVarChar(100), mergedBrand)
-    .input('name', sql.NVarChar(200), mergedName)
-    .input('shortDesc', sql.NVarChar(400), mergedShortDesc)
-    .input('categoryCode', sql.NVarChar(30), mergedCategoryCode)
-    .input('subType', sql.NVarChar(100), mergedSubType)
-    .input('petType', sql.NVarChar(10), mergedPetType)
-    .input('sizes', sql.NVarChar(200), mergedSizes)
-    .input('price', sql.Decimal(18, 0), mergedPrice)
-    .input('originalPrice', sql.Decimal(18, 0), mergedOriginalPrice)
-    .input('primaryImage', sql.NVarChar(500), mergedImage)
-    .input('stockCount', sql.Int, mergedStockCount)
-    .input('isFeatured', sql.Bit, mergedIsFeatured)
-    .input('isActive', sql.Bit, mergedIsActive)
-    .query(`
-      UPDATE dbo.Products
-      SET Brand = @brand,
-          Name = @name,
-          ShortDesc = @shortDesc,
-          CategoryCode = @categoryCode,
-          SubType = @subType,
-          PetType = @petType,
-          Sizes = @sizes,
-          Price = @price,
-          OriginalPrice = @originalPrice,
-          PrimaryImage = @primaryImage,
-          StockCount = @stockCount,
-          IsFeatured = @isFeatured,
-          IsActive = @isActive
-      OUTPUT INSERTED.*
-      WHERE ProductId = @id
-    `);
+  await pool.query(
+    `
+      UPDATE Products
+      SET Brand = ?,
+          Name = ?,
+          ShortDesc = ?,
+          CategoryCode = ?,
+          SubType = ?,
+          PetType = ?,
+          Sizes = ?,
+          Price = ?,
+          OriginalPrice = ?,
+          PrimaryImage = ?,
+          StockCount = ?,
+          IsFeatured = ?,
+          IsActive = ?
+      WHERE ProductId = ?
+    `,
+    [
+      mergedBrand.slice(0, 100),
+      mergedName.slice(0, 200),
+      mergedShortDesc ? mergedShortDesc.slice(0, 400) : null,
+      mergedCategoryCode.slice(0, 30),
+      mergedSubType ? mergedSubType.slice(0, 100) : null,
+      mergedPetType,
+      mergedSizes ? String(mergedSizes).slice(0, 200) : null,
+      mergedPrice,
+      mergedOriginalPrice,
+      mergedImage.slice(0, 500),
+      mergedStockCount,
+      mergedIsFeatured,
+      mergedIsActive,
+      id,
+    ]
+  );
 
-  const mappedList = await attachReviewsToProducts(pool, [updateRes.recordset[0]]);
+  const [updatedRows] = await pool.query('SELECT * FROM Products WHERE ProductId = ?', [
+    id,
+  ]);
+  const mappedList = await attachReviewsToProducts(pool, [updatedRows[0]]);
   return mappedList[0];
 }
 
@@ -702,16 +695,16 @@ async function adjustProductStock(productId, body = {}) {
   }
 
   const pool = await poolPromise;
-  const existingRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query('SELECT * FROM dbo.Products WHERE ProductId = @id');
+  const [existingRows] = await pool.query(
+    'SELECT * FROM Products WHERE ProductId = ?',
+    [id]
+  );
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy sản phẩm.', 404);
   }
 
-  const existing = existingRes.recordset[0];
+  const existing = existingRows[0];
   const hasStockCount =
     body.stockCount !== undefined && body.stockCount !== null && body.stockCount !== '';
   const hasDelta =
@@ -739,18 +732,15 @@ async function adjustProductStock(productId, body = {}) {
     }
   }
 
-  const updateRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .input('stockCount', sql.Int, nextStock)
-    .query(`
-      UPDATE dbo.Products
-      SET StockCount = @stockCount
-      OUTPUT INSERTED.*
-      WHERE ProductId = @id
-    `);
+  await pool.query('UPDATE Products SET StockCount = ? WHERE ProductId = ?', [
+    nextStock,
+    id,
+  ]);
 
-  const mappedList = await attachReviewsToProducts(pool, [updateRes.recordset[0]]);
+  const [updatedRows] = await pool.query('SELECT * FROM Products WHERE ProductId = ?', [
+    id,
+  ]);
+  const mappedList = await attachReviewsToProducts(pool, [updatedRows[0]]);
   return mappedList[0];
 }
 
@@ -761,21 +751,20 @@ async function restoreProduct(productId) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query(`
-      UPDATE dbo.Products
-      SET IsActive = 1
-      OUTPUT INSERTED.*
-      WHERE ProductId = @id
-    `);
-
-  if (result.recordset.length === 0) {
+  const [existingRows] = await pool.query(
+    'SELECT ProductId FROM Products WHERE ProductId = ?',
+    [id]
+  );
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy sản phẩm.', 404);
   }
 
-  const mappedList = await attachReviewsToProducts(pool, [result.recordset[0]]);
+  await pool.query('UPDATE Products SET IsActive = 1 WHERE ProductId = ?', [id]);
+  const [updatedRows] = await pool.query('SELECT * FROM Products WHERE ProductId = ?', [
+    id,
+  ]);
+
+  const mappedList = await attachReviewsToProducts(pool, [updatedRows[0]]);
   return mappedList[0];
 }
 
@@ -786,12 +775,11 @@ async function softDeleteProduct(productId) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query('UPDATE dbo.Products SET IsActive = 0 WHERE ProductId = @id');
+  const [res] = await pool.query('UPDATE Products SET IsActive = 0 WHERE ProductId = ?', [
+    id,
+  ]);
 
-  if (result.rowsAffected[0] === 0) {
+  if (res.affectedRows === 0) {
     throw new AppError('Không tìm thấy sản phẩm.', 404);
   }
 
@@ -799,18 +787,18 @@ async function softDeleteProduct(productId) {
 }
 
 // ============================================================================
-// 3. PRODUCT REVIEWS (dbo.ProductReviews)
+// 3. PRODUCT REVIEWS (ProductReviews)
 // ============================================================================
 
 async function listAllReviews(queryParams = {}) {
   const { productId, rating } = queryParams;
   const pool = await poolPromise;
-  const request = pool.request();
-  let query = 'SELECT * FROM dbo.ProductReviews WHERE 1=1';
+  let query = 'SELECT * FROM ProductReviews WHERE 1=1';
+  const params = [];
 
   if (productId && String(productId).trim()) {
-    query += ' AND ProductId = @productId';
-    request.input('productId', sql.NVarChar(60), String(productId).trim());
+    query += ' AND ProductId = ?';
+    params.push(String(productId).trim());
   }
 
   if (rating !== undefined && rating !== null && String(rating).trim() !== '') {
@@ -818,13 +806,13 @@ async function listAllReviews(queryParams = {}) {
     if (!Number.isInteger(rNum) || rNum < 1 || rNum > 5) {
       throw new AppError('Số sao lọc phải từ 1 đến 5.', 400);
     }
-    query += ' AND Rating = @rating';
-    request.input('rating', sql.TinyInt, rNum);
+    query += ' AND Rating = ?';
+    params.push(rNum);
   }
 
   query += ' ORDER BY CreatedAt DESC, ReviewId DESC';
-  const result = await request.query(query);
-  return result.recordset.map(mapReviewRow);
+  const [rows] = await pool.query(query, params);
+  return rows.map(mapReviewRow);
 }
 
 async function listProductReviews(productId) {
@@ -834,21 +822,21 @@ async function listProductReviews(productId) {
   }
 
   const pool = await poolPromise;
-  const prodRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query('SELECT ProductId FROM dbo.Products WHERE ProductId = @id');
+  const [prodRows] = await pool.query(
+    'SELECT ProductId FROM Products WHERE ProductId = ?',
+    [id]
+  );
 
-  if (prodRes.recordset.length === 0) {
+  if (prodRows.length === 0) {
     throw new AppError('Không tìm thấy sản phẩm.', 404);
   }
 
-  const revRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query('SELECT * FROM dbo.ProductReviews WHERE ProductId = @id ORDER BY CreatedAt DESC, ReviewId DESC');
+  const [revRows] = await pool.query(
+    'SELECT * FROM ProductReviews WHERE ProductId = ? ORDER BY CreatedAt DESC, ReviewId DESC',
+    [id]
+  );
 
-  return revRes.recordset.map(mapReviewRow);
+  return revRows.map(mapReviewRow);
 }
 
 async function createProductReview(productId, body = {}, currentUser = null) {
@@ -858,12 +846,12 @@ async function createProductReview(productId, body = {}, currentUser = null) {
   }
 
   const pool = await poolPromise;
-  const prodRes = await pool
-    .request()
-    .input('id', sql.NVarChar(60), id)
-    .query('SELECT ProductId FROM dbo.Products WHERE ProductId = @id');
+  const [prodRows] = await pool.query(
+    'SELECT ProductId FROM Products WHERE ProductId = ?',
+    [id]
+  );
 
-  if (prodRes.recordset.length === 0) {
+  if (prodRows.length === 0) {
     throw new AppError('Không tìm thấy sản phẩm.', 404);
   }
 
@@ -893,15 +881,15 @@ async function createProductReview(productId, body = {}, currentUser = null) {
 
   let matchedUserName = null;
   if (resolvedUserId !== null) {
-    const userRes = await pool
-      .request()
-      .input('userId', sql.Int, resolvedUserId)
-      .query('SELECT UserId, FullName FROM dbo.Users WHERE UserId = @userId');
+    const [userRows] = await pool.query(
+      'SELECT UserId, FullName FROM Users WHERE UserId = ?',
+      [resolvedUserId]
+    );
 
-    if (userRes.recordset.length === 0) {
+    if (userRows.length === 0) {
       resolvedUserId = null;
     } else {
-      matchedUserName = userRes.recordset[0].FullName || null;
+      matchedUserName = userRows[0].FullName || null;
     }
   }
 
@@ -913,21 +901,26 @@ async function createProductReview(productId, body = {}, currentUser = null) {
       ? String(body.petTag).trim()
       : 'Hội viên PetsFriend';
 
-  const insertRes = await pool
-    .request()
-    .input('productId', sql.NVarChar(60), id)
-    .input('userId', sql.Int, resolvedUserId)
-    .input('authorName', sql.NVarChar(120), resolvedAuthor)
-    .input('petTag', sql.NVarChar(100), resolvedPetTag)
-    .input('rating', sql.TinyInt, safeRating)
-    .input('comment', sql.NVarChar(1000), resolvedComment)
-    .query(`
-      INSERT INTO dbo.ProductReviews (ProductId, UserId, AuthorName, PetTag, Rating, Comment)
-      OUTPUT INSERTED.*
-      VALUES (@productId, @userId, @authorName, @petTag, @rating, @comment)
-    `);
+  const [insertRes] = await pool.query(
+    `
+      INSERT INTO ProductReviews (ProductId, UserId, AuthorName, PetTag, Rating, Comment)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [
+      id,
+      resolvedUserId,
+      resolvedAuthor.slice(0, 120),
+      resolvedPetTag.slice(0, 100),
+      safeRating,
+      resolvedComment.slice(0, 1000),
+    ]
+  );
 
-  return mapReviewRow(insertRes.recordset[0]);
+  const [revRows] = await pool.query(
+    'SELECT * FROM ProductReviews WHERE ReviewId = ?',
+    [insertRes.insertId]
+  );
+  return mapReviewRow(revRows[0]);
 }
 
 async function updateProductReview(reviewId, body = {}, currentUser = null) {
@@ -937,16 +930,16 @@ async function updateProductReview(reviewId, body = {}, currentUser = null) {
   }
 
   const pool = await poolPromise;
-  const revRes = await pool
-    .request()
-    .input('reviewId', sql.Int, revId)
-    .query('SELECT * FROM dbo.ProductReviews WHERE ReviewId = @reviewId');
+  const [revRows] = await pool.query(
+    'SELECT * FROM ProductReviews WHERE ReviewId = ?',
+    [revId]
+  );
 
-  if (revRes.recordset.length === 0) {
+  if (revRows.length === 0) {
     throw new AppError('Không tìm thấy đánh giá sản phẩm.', 404);
   }
 
-  const rev = revRes.recordset[0];
+  const rev = revRows[0];
 
   if (!currentUser && process.env.STRICT_AUTH === 'true') {
     throw new AppError('Vui lòng đăng nhập.', 401);
@@ -988,24 +981,29 @@ async function updateProductReview(reviewId, body = {}, currentUser = null) {
       ? String(rawAuthor || '').trim() || rev.AuthorName
       : rev.AuthorName;
 
-  const updateRes = await pool
-    .request()
-    .input('reviewId', sql.Int, revId)
-    .input('authorName', sql.NVarChar(120), mergedAuthor)
-    .input('petTag', sql.NVarChar(100), mergedPetTag)
-    .input('rating', sql.TinyInt, mergedRating)
-    .input('comment', sql.NVarChar(1000), mergedComment)
-    .query(`
-      UPDATE dbo.ProductReviews
-      SET AuthorName = @authorName,
-          PetTag = @petTag,
-          Rating = @rating,
-          Comment = @comment
-      OUTPUT INSERTED.*
-      WHERE ReviewId = @reviewId
-    `);
+  await pool.query(
+    `
+      UPDATE ProductReviews
+      SET AuthorName = ?,
+          PetTag = ?,
+          Rating = ?,
+          Comment = ?
+      WHERE ReviewId = ?
+    `,
+    [
+      mergedAuthor.slice(0, 120),
+      mergedPetTag ? String(mergedPetTag).slice(0, 100) : null,
+      mergedRating,
+      mergedComment.slice(0, 1000),
+      revId,
+    ]
+  );
 
-  return mapReviewRow(updateRes.recordset[0]);
+  const [updatedRows] = await pool.query(
+    'SELECT * FROM ProductReviews WHERE ReviewId = ?',
+    [revId]
+  );
+  return mapReviewRow(updatedRows[0]);
 }
 
 async function deleteProductReview(reviewId, currentUser = null) {
@@ -1015,16 +1013,16 @@ async function deleteProductReview(reviewId, currentUser = null) {
   }
 
   const pool = await poolPromise;
-  const revRes = await pool
-    .request()
-    .input('reviewId', sql.Int, revId)
-    .query('SELECT * FROM dbo.ProductReviews WHERE ReviewId = @reviewId');
+  const [revRows] = await pool.query(
+    'SELECT * FROM ProductReviews WHERE ReviewId = ?',
+    [revId]
+  );
 
-  if (revRes.recordset.length === 0) {
+  if (revRows.length === 0) {
     throw new AppError('Không tìm thấy đánh giá sản phẩm.', 404);
   }
 
-  const rev = revRes.recordset[0];
+  const rev = revRows[0];
 
   if (!currentUser && process.env.STRICT_AUTH === 'true') {
     throw new AppError('Vui lòng đăng nhập.', 401);
@@ -1039,10 +1037,7 @@ async function deleteProductReview(reviewId, currentUser = null) {
     throw new AppError('Bạn không có quyền xóa đánh giá này.', 403);
   }
 
-  await pool
-    .request()
-    .input('reviewId', sql.Int, revId)
-    .query('DELETE FROM dbo.ProductReviews WHERE ReviewId = @reviewId');
+  await pool.query('DELETE FROM ProductReviews WHERE ReviewId = ?', [revId]);
 
   return { message: 'Đã xóa đánh giá sản phẩm.' };
 }

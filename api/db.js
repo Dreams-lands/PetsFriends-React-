@@ -1,84 +1,52 @@
 const path = require('path');
+const mysql = require('mysql2/promise');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
-const useWindowsAuth = (process.env.DB_AUTH || '').toLowerCase() === 'windows';
-
-let sql;
-if (useWindowsAuth) {
-  try {
-    sql = require('mssql/msnodesqlv8');
-  } catch {
-    console.warn('msnodesqlv8 chưa được cài đặt, chuyển sang dùng driver mssql mặc định.');
-    sql = require('mssql');
-  }
-} else {
-  sql = require('mssql');
-}
-
-const server = process.env.DB_SERVER || 'localhost';
+const host = process.env.DB_HOST || process.env.DB_SERVER || 'localhost';
+const port = parseInt(process.env.DB_PORT, 10) || 3306;
 const database = process.env.DB_NAME || 'QLThuCung';
+const user = process.env.DB_USER || 'root';
+const password = process.env.DB_PASSWORD || '';
 
 async function createPool() {
-  if (!useWindowsAuth) {
-    const user = process.env.DB_USER || 'sa';
-    const password = process.env.DB_PASSWORD || '';
-    
-    if (!process.env.DB_PASSWORD) {
-      console.warn('CHÚ Ý: Chưa tìm thấy DB_PASSWORD trong file api/.env. Đang thử kết nối user sa...');
-    }
+  const pool = mysql.createPool({
+    host,
+    port,
+    user,
+    password,
+    database,
+    charset: 'utf8mb4',
+    timezone: 'Z',
+    decimalNumbers: true,
+    waitForConnections: true,
+    connectionLimit: 10,
+    queueLimit: 0,
+    connectTimeout: 15000,
+  });
 
-    const sqlConfig = {
-      user,
-      password,
-      server,
-      database,
-      port: parseInt(process.env.DB_PORT, 10) || 1433,
-      options: {
-        encrypt: false,
-        trustServerCertificate: true,
-      },
-      connectionTimeout: 15000,
-      requestTimeout: 15000,
-    };
-    const pool = await new sql.ConnectionPool(sqlConfig).connect();
-    console.log(`Kết nối SQL Server (SQL Auth - user: ${user}) thành công!`);
-    return pool;
+  if (typeof pool.on === 'function') {
+    pool.on('connection', (connection) => {
+      connection.query("SET time_zone = '+00:00', sql_safe_updates = 0");
+    });
   }
 
-  const drivers = [
-    process.env.DB_ODBC_DRIVER,
-    'ODBC Driver 18 for SQL Server',
-    'ODBC Driver 17 for SQL Server',
-    'SQL Server',
-  ].filter(Boolean);
+  pool.close = () => pool.end();
 
-  let lastErr;
-  for (const driver of drivers) {
-    const connectionString =
-      driver === 'SQL Server'
-        ? `Driver={${driver}};Server=${server};Database=${database};Trusted_Connection=Yes;`
-        : `Driver={${driver}};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
-
-    try {
-      const pool = await new sql.ConnectionPool({ connectionString }).connect();
-      console.log(`Kết nối SQL Server (Windows Auth - ${driver}) thành công!`);
-      return pool;
-    } catch (err) {
-      lastErr = err;
-      const msg = String(err?.message || '');
-      if (!msg.includes('IM002') && !msg.includes('Data source name not found')) {
-        break;
-      }
-    }
+  const conn = await pool.getConnection();
+  try {
+    await conn.query("SET time_zone = '+00:00', sql_safe_updates = 0");
+    await conn.query('SELECT 1 AS ok');
+    console.log(`Kết nối MySQL (${host}:${port}/${database} - user: ${user}) thành công!`);
+  } finally {
+    conn.release();
   }
 
-  console.error('Lỗi kết nối SQL Server:', lastErr?.message || lastErr);
-  throw lastErr;
+  return pool;
 }
 
 const poolPromise = createPool();
 poolPromise.catch((err) => {
-  console.error('Không thể kết nối SQL Server:', err?.message || err);
+  console.error('Không thể kết nối MySQL:', err?.message || err);
 });
 
-module.exports = { sql, poolPromise };
+module.exports = { mysql, poolPromise };

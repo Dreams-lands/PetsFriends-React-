@@ -1,4 +1,4 @@
-const { sql, poolPromise } = require('../../../api/db');
+const { poolPromise } = require('../../../api/db');
 const { mapProductRow, mapReviewRow } = require('../utils/mappers');
 const { AppError } = require('./userService');
 
@@ -29,67 +29,62 @@ async function ensureUserExists(pool, userId) {
   if (!Number.isInteger(uid) || uid <= 0) {
     throw new AppError('Mã người dùng không hợp lệ.', 400);
   }
-  const userRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT UserId FROM dbo.Users WHERE UserId = @userId');
+  const [userRows] = await pool.query('SELECT UserId FROM Users WHERE UserId = ?', [uid]);
 
-  if (userRes.recordset.length === 0) {
+  if (userRows.length === 0) {
     throw new AppError('Không tìm thấy người dùng.', 404);
   }
   return uid;
 }
 
 async function fetchActiveWishlistIds(pool, uid) {
-  const res = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query(`
+  const [rows] = await pool.query(
+    `
       SELECT w.ProductId
-      FROM dbo.UserWishlists w
-      INNER JOIN dbo.Products p ON w.ProductId = p.ProductId
-      WHERE w.UserId = @userId AND p.IsActive = 1
+      FROM UserWishlists w
+      INNER JOIN Products p ON w.ProductId = p.ProductId
+      WHERE w.UserId = ? AND p.IsActive = 1
       ORDER BY w.CreatedAt DESC
-    `);
-  return res.recordset.map((r) => r.ProductId);
+    `,
+    [uid]
+  );
+  return rows.map((r) => r.ProductId);
 }
 
 async function getUserWishlist(userId) {
   const pool = await poolPromise;
   const uid = await ensureUserExists(pool, userId);
 
-  const prodRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query(`
+  const [rows] = await pool.query(
+    `
       SELECT p.*
-      FROM dbo.UserWishlists w
-      INNER JOIN dbo.Products p ON w.ProductId = p.ProductId
-      WHERE w.UserId = @userId AND p.IsActive = 1
+      FROM UserWishlists w
+      INNER JOIN Products p ON w.ProductId = p.ProductId
+      WHERE w.UserId = ? AND p.IsActive = 1
       ORDER BY w.CreatedAt DESC
-    `);
+    `,
+    [uid]
+  );
 
-  const rows = prodRes.recordset;
   if (rows.length === 0) {
     return { productIds: [], items: [] };
   }
 
-  const revReq = pool.request();
-  const placeholders = rows.map((r, idx) => {
-    const param = `pid${idx}`;
-    revReq.input(param, sql.NVarChar(60), r.ProductId);
-    return `@${param}`;
-  });
+  const productIdsParam = rows.map((r) => r.ProductId);
+  const placeholders = productIdsParam.map(() => '?').join(', ');
 
-  const revRes = await revReq.query(`
-    SELECT *
-    FROM dbo.ProductReviews
-    WHERE ProductId IN (${placeholders.join(', ')})
-    ORDER BY ReviewId DESC
-  `);
+  const [revRows] = await pool.query(
+    `
+      SELECT *
+      FROM ProductReviews
+      WHERE ProductId IN (${placeholders})
+      ORDER BY ReviewId DESC
+    `,
+    productIdsParam
+  );
 
   const reviewsByProduct = new Map();
-  for (const revRow of revRes.recordset) {
+  for (const revRow of revRows) {
     const list = reviewsByProduct.get(revRow.ProductId) || [];
     list.push(mapReviewRow(revRow));
     reviewsByProduct.set(revRow.ProductId, list);
@@ -112,28 +107,19 @@ async function addToWishlist(userId, productId) {
   const pool = await poolPromise;
   const uid = await ensureUserExists(pool, userId);
 
-  const prodCheck = await pool
-    .request()
-    .input('productId', sql.NVarChar(60), pid)
-    .query('SELECT ProductId FROM dbo.Products WHERE ProductId = @productId AND IsActive = 1');
+  const [prodCheck] = await pool.query(
+    'SELECT ProductId FROM Products WHERE ProductId = ? AND IsActive = 1',
+    [pid]
+  );
 
-  if (prodCheck.recordset.length === 0) {
+  if (prodCheck.length === 0) {
     throw new AppError('Không tìm thấy sản phẩm.', 404);
   }
 
-  await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .input('productId', sql.NVarChar(60), pid)
-    .query(`
-      IF NOT EXISTS (
-        SELECT 1 FROM dbo.UserWishlists WHERE UserId = @userId AND ProductId = @productId
-      )
-      BEGIN
-        INSERT INTO dbo.UserWishlists (UserId, ProductId)
-        VALUES (@userId, @productId);
-      END
-    `);
+  await pool.query(
+    'INSERT IGNORE INTO UserWishlists (UserId, ProductId) VALUES (?, ?)',
+    [uid, pid]
+  );
 
   const productIds = await fetchActiveWishlistIds(pool, uid);
   return { productId: pid, productIds };
@@ -148,11 +134,10 @@ async function removeFromWishlist(userId, productId) {
   const pool = await poolPromise;
   const uid = await ensureUserExists(pool, userId);
 
-  await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .input('productId', sql.NVarChar(60), pid)
-    .query('DELETE FROM dbo.UserWishlists WHERE UserId = @userId AND ProductId = @productId');
+  await pool.query(
+    'DELETE FROM UserWishlists WHERE UserId = ? AND ProductId = ?',
+    [uid, pid]
+  );
 
   const productIds = await fetchActiveWishlistIds(pool, uid);
   return { productId: pid, productIds };
@@ -160,11 +145,10 @@ async function removeFromWishlist(userId, productId) {
 
 async function getStaffRoster() {
   const pool = await poolPromise;
-  const res = await pool
-    .request()
-    .query('SELECT StaffId, StaffName, CreatedAt FROM dbo.StaffRoster ORDER BY StaffId ASC');
+  const [rows] = await pool.query(
+    'SELECT StaffId, StaffName, CreatedAt FROM StaffRoster ORDER BY StaffId ASC'
+  );
 
-  const rows = res.recordset;
   return {
     staffRoster: rows.map((r) => r.StaffName),
     items: rows,
@@ -193,20 +177,22 @@ async function replaceStaffRoster(staffNames) {
   }
 
   const pool = await poolPromise;
-  const tx = new sql.Transaction(pool);
-  await tx.begin();
+  const conn = await pool.getConnection();
   try {
-    await new sql.Request(tx).query('DELETE FROM dbo.StaffRoster');
+    await conn.beginTransaction();
+    await conn.query('DELETE FROM StaffRoster');
     for (const name of uniqueNames) {
       // eslint-disable-next-line no-await-in-loop
-      await new sql.Request(tx)
-        .input('staffName', sql.NVarChar(120), name)
-        .query('INSERT INTO dbo.StaffRoster (StaffName) VALUES (@staffName)');
+      await conn.query('INSERT INTO StaffRoster (StaffName) VALUES (?)', [
+        name.slice(0, 120),
+      ]);
     }
-    await tx.commit();
+    await conn.commit();
   } catch (err) {
-    await tx.rollback().catch(() => {});
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 
   return { staffRoster: uniqueNames };
@@ -219,19 +205,18 @@ async function addStaffMember(staffName) {
   }
 
   const pool = await poolPromise;
-  const dupRes = await pool
-    .request()
-    .input('staffName', sql.NVarChar(120), trimmed)
-    .query('SELECT StaffId FROM dbo.StaffRoster WHERE LOWER(StaffName) = LOWER(@staffName)');
+  const [dupRows] = await pool.query(
+    'SELECT StaffId FROM StaffRoster WHERE LOWER(StaffName) = LOWER(?)',
+    [trimmed]
+  );
 
-  if (dupRes.recordset.length > 0) {
+  if (dupRows.length > 0) {
     throw new AppError('Nhân viên này đã có trong danh sách trực.', 409);
   }
 
-  await pool
-    .request()
-    .input('staffName', sql.NVarChar(120), trimmed)
-    .query('INSERT INTO dbo.StaffRoster (StaffName) VALUES (@staffName)');
+  await pool.query('INSERT INTO StaffRoster (StaffName) VALUES (?)', [
+    trimmed.slice(0, 120),
+  ]);
 
   return getStaffRoster();
 }
@@ -243,20 +228,18 @@ async function removeStaffMember(staffName) {
   }
 
   const pool = await poolPromise;
-  const countRes = await pool
-    .request()
-    .query('SELECT COUNT(*) AS cnt FROM dbo.StaffRoster');
+  const [countRows] = await pool.query('SELECT COUNT(*) AS cnt FROM StaffRoster');
 
-  if (Number(countRes.recordset[0].cnt) <= 1) {
+  if (Number(countRows[0].cnt) <= 1) {
     throw new AppError('Cần giữ ít nhất 1 nhân viên sử dụng tài khoản staff.', 400);
   }
 
-  const delRes = await pool
-    .request()
-    .input('staffName', sql.NVarChar(120), trimmed)
-    .query('DELETE FROM dbo.StaffRoster WHERE LOWER(StaffName) = LOWER(@staffName)');
+  const [delRes] = await pool.query(
+    'DELETE FROM StaffRoster WHERE LOWER(StaffName) = LOWER(?)',
+    [trimmed]
+  );
 
-  if (!delRes.rowsAffected || delRes.rowsAffected[0] === 0) {
+  if (!delRes.affectedRows) {
     throw new AppError('Không tìm thấy nhân viên trong danh sách.', 404);
   }
 
@@ -265,12 +248,10 @@ async function removeStaffMember(staffName) {
 
 async function getStaffPermissions() {
   const pool = await poolPromise;
-  const res = await pool
-    .request()
-    .query('SELECT PermKey, IsAllowed FROM dbo.StaffPermissions');
+  const [rows] = await pool.query('SELECT PermKey, IsAllowed FROM StaffPermissions');
 
   const permissions = { ...DEFAULT_STAFF_PERMISSIONS };
-  for (const row of res.recordset) {
+  for (const row of rows) {
     if (ALLOWED_PERMISSION_KEYS.includes(row.PermKey)) {
       permissions[row.PermKey] = Boolean(row.IsAllowed);
     }
@@ -300,16 +281,14 @@ async function updateStaffPermissions(permsObj) {
     }
     const allowedBit = isSettings ? 0 : source[key] ? 1 : 0;
     // eslint-disable-next-line no-await-in-loop
-    await pool
-      .request()
-      .input('permKey', sql.NVarChar(50), key)
-      .input('isAllowed', sql.Bit, allowedBit)
-      .query(`
-        IF EXISTS (SELECT 1 FROM dbo.StaffPermissions WHERE PermKey = @permKey)
-          UPDATE dbo.StaffPermissions SET IsAllowed = @isAllowed WHERE PermKey = @permKey;
-        ELSE
-          INSERT INTO dbo.StaffPermissions (PermKey, IsAllowed) VALUES (@permKey, @isAllowed);
-      `);
+    await pool.query(
+      `
+        INSERT INTO StaffPermissions (PermKey, IsAllowed)
+        VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE IsAllowed = VALUES(IsAllowed)
+      `,
+      [key, allowedBit]
+    );
   }
 
   return getStaffPermissions();

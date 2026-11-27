@@ -3,7 +3,7 @@ const router = express.Router();
 const { optionalAuth, requireRole } = require('../middlewares/authMiddleware');
 const spaAndContactController = require('../controllers/spaAndContactController');
 
-// 1. Spa Packages (dbo.SpaPackages)
+// 1. Spa Packages (SpaPackages)
 router.get('/spa-packages', spaAndContactController.listSpaPackages);
 router.get('/spa-packages/:id', spaAndContactController.getSpaPackageById);
 router.post(
@@ -25,7 +25,7 @@ router.delete(
   spaAndContactController.deleteSpaPackage
 );
 
-// 2. Service Bookings (dbo.ServiceBookings)
+// 2. Service Bookings (ServiceBookings)
 router.get('/service-bookings', spaAndContactController.listServiceBookings);
 // Guest Booking Lookup — MUST be mounted before /service-bookings/:id
 router.get('/service-bookings/lookup', spaAndContactController.lookupServiceBooking);
@@ -71,7 +71,7 @@ router.delete(
   spaAndContactController.deleteServiceBooking
 );
 
-// 3. Contact Messages (dbo.ContactMessages)
+// 3. Contact Messages (ContactMessages)
 router.get(
   '/contact-messages',
   optionalAuth,

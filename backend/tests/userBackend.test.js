@@ -23,7 +23,6 @@ const DEFAULT_PERMS = {
 };
 
 let serverProc = null;
-let sql = null;
 let pool = null;
 
 let customerId = null;
@@ -85,32 +84,28 @@ async function waitForHealth(timeoutMs = 20000) {
 async function cleanupTestArtifacts() {
   if (!pool) return;
 
-  await pool
-    .request()
-    .input('e1', sql.NVarChar(150), TEST_CUSTOMER_EMAIL)
-    .input('e2', sql.NVarChar(150), TEST_ADMIN_CREATED_EMAIL)
-    .query(`
-      DELETE FROM dbo.Users
-      WHERE LOWER(Email) IN (LOWER(@e1), LOWER(@e2))
-    `);
+  await pool.query(
+    `
+      DELETE FROM Users
+      WHERE LOWER(Email) IN (LOWER(?), LOWER(?))
+    `,
+    [TEST_CUSTOMER_EMAIL, TEST_ADMIN_CREATED_EMAIL]
+  );
 
-  await pool
-    .request()
-    .input('staffName', sql.NVarChar(120), TEMP_STAFF_NAME)
-    .query('DELETE FROM dbo.StaffRoster WHERE LOWER(StaffName) = LOWER(@staffName)');
+  await pool.query('DELETE FROM StaffRoster WHERE LOWER(StaffName) = LOWER(?)', [
+    TEMP_STAFF_NAME,
+  ]);
 
   for (const [permKey, isAllowed] of Object.entries(DEFAULT_PERMS)) {
     // eslint-disable-next-line no-await-in-loop
-    await pool
-      .request()
-      .input('permKey', sql.NVarChar(50), permKey)
-      .input('isAllowed', sql.Bit, isAllowed ? 1 : 0)
-      .query(`
-        IF EXISTS (SELECT 1 FROM dbo.StaffPermissions WHERE PermKey = @permKey)
-          UPDATE dbo.StaffPermissions SET IsAllowed = @isAllowed WHERE PermKey = @permKey;
-        ELSE
-          INSERT INTO dbo.StaffPermissions (PermKey, IsAllowed) VALUES (@permKey, @isAllowed);
-      `);
+    await pool.query(
+      `
+        INSERT INTO StaffPermissions (PermKey, IsAllowed)
+        VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE IsAllowed = VALUES(IsAllowed)
+      `,
+      [permKey, isAllowed ? 1 : 0]
+    );
   }
 }
 
@@ -119,7 +114,6 @@ describe('User & Auth Backend Integration Suite (QLThuCung)', () => {
     const prevCwd = process.cwd();
     process.chdir(apiDir);
     const dbModule = require(path.join(apiDir, 'db'));
-    sql = dbModule.sql;
     pool = await dbModule.poolPromise;
     process.chdir(prevCwd);
 
@@ -154,7 +148,7 @@ describe('User & Auth Backend Integration Suite (QLThuCung)', () => {
     }
   });
 
-  it('1. POST /api/auth/register creates customer with dashed phone, gender Nữ, initial address, and stores bcrypt hash in SQL Server', async () => {
+  it('1. POST /api/auth/register creates customer with dashed phone, gender Nữ, initial address, and stores bcrypt hash in MySQL', async () => {
     const { status, data } = await apiRequest('/api/auth/register', {
       method: 'POST',
       body: {
@@ -182,16 +176,16 @@ describe('User & Auth Backend Integration Suite (QLThuCung)', () => {
     customerToken = data.token;
     initialAddressId = data.addresses[0].addressId;
 
-    const dbRes = await pool
-      .request()
-      .input('userId', sql.Int, customerId)
-      .query('SELECT PasswordHash, Gender, Status FROM dbo.Users WHERE UserId = @userId');
+    const [dbRows] = await pool.query(
+      'SELECT PasswordHash, Gender, Status FROM Users WHERE UserId = ?',
+      [customerId]
+    );
 
-    assert.equal(dbRes.recordset.length, 1);
-    assert.match(dbRes.recordset[0].PasswordHash, /^\$2[aby]\$/);
-    assert.notEqual(dbRes.recordset[0].PasswordHash, 'UserPass@123');
-    assert.equal(dbRes.recordset[0].Gender, 'Nữ');
-    assert.equal(dbRes.recordset[0].Status, 'active');
+    assert.equal(dbRows.length, 1);
+    assert.match(dbRows[0].PasswordHash, /^\$2[aby]\$/);
+    assert.notEqual(dbRows[0].PasswordHash, 'UserPass@123');
+    assert.equal(dbRows[0].Gender, 'Nữ');
+    assert.equal(dbRows[0].Status, 'active');
   });
 
   it('2. POST /api/auth/register rejects duplicate email with 409', async () => {

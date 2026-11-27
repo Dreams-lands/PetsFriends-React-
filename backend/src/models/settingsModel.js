@@ -1,4 +1,4 @@
-const { sql, poolPromise } = require('../config/db');
+const { poolPromise } = require('../config/db');
 
 const STORE_COLS = `StoreName AS storeName, StreetAddress AS streetAddress, District AS district, City AS city,
   Hotline AS hotline, Phone AS phone, Email AS email, ZaloUrl AS zaloUrl, FacebookUrl AS facebookUrl,
@@ -16,63 +16,67 @@ const PERM_KEYS = [
 
 exports.getStore = async () => {
   const pool = await poolPromise;
-  const r = await pool.request().query(`SELECT ${STORE_COLS} FROM StoreSettings WHERE Id = 1`);
-  return r.recordset[0];
+  const [rows] = await pool.query(`SELECT ${STORE_COLS} FROM StoreSettings WHERE Id = 1`);
+  return rows[0];
 };
 
-// Trường nào không gửi (null) thì giữ nguyên giá trị cũ
 exports.updateStore = async (s) => {
   const pool = await poolPromise;
-  await pool.request()
-    .input('storeName', sql.NVarChar(200), s.storeName)
-    .input('street', sql.NVarChar(200), s.streetAddress)
-    .input('district', sql.NVarChar(100), s.district)
-    .input('city', sql.NVarChar(100), s.city)
-    .input('hotline', sql.NVarChar(30), s.hotline)
-    .input('phone', sql.NVarChar(30), s.phone)
-    .input('email', sql.NVarChar(150), s.email)
-    .input('zalo', sql.NVarChar(300), s.zaloUrl)
-    .input('fb', sql.NVarChar(300), s.facebookUrl)
-    .input('hours', sql.NVarChar(100), s.hours)
-    .input('tz', sql.NVarChar(100), s.timezone)
-    .input('cur', sql.NVarChar(30), s.currency)
-    .query(`UPDATE StoreSettings SET
-      StoreName = COALESCE(@storeName, StoreName), StreetAddress = COALESCE(@street, StreetAddress),
-      District = COALESCE(@district, District), City = COALESCE(@city, City),
-      Hotline = COALESCE(@hotline, Hotline), Phone = COALESCE(@phone, Phone),
-      Email = COALESCE(@email, Email), ZaloUrl = COALESCE(@zalo, ZaloUrl),
-      FacebookUrl = COALESCE(@fb, FacebookUrl), Hours = COALESCE(@hours, Hours),
-      Timezone = COALESCE(@tz, Timezone), Currency = COALESCE(@cur, Currency)
-      WHERE Id = 1`);
+  await pool.query(
+    `UPDATE StoreSettings SET
+      StoreName = COALESCE(?, StoreName), StreetAddress = COALESCE(?, StreetAddress),
+      District = COALESCE(?, District), City = COALESCE(?, City),
+      Hotline = COALESCE(?, Hotline), Phone = COALESCE(?, Phone),
+      Email = COALESCE(?, Email), ZaloUrl = COALESCE(?, ZaloUrl),
+      FacebookUrl = COALESCE(?, FacebookUrl), Hours = COALESCE(?, Hours),
+      Timezone = COALESCE(?, Timezone), Currency = COALESCE(?, Currency)
+      WHERE Id = 1`,
+    [
+      s.storeName ?? null,
+      s.streetAddress ?? null,
+      s.district ?? null,
+      s.city ?? null,
+      s.hotline ?? null,
+      s.phone ?? null,
+      s.email ?? null,
+      s.zaloUrl ?? null,
+      s.facebookUrl ?? null,
+      s.hours ?? null,
+      s.timezone ?? null,
+      s.currency ?? null,
+    ]
+  );
   return exports.getStore();
 };
 
 exports.getPermissions = async () => {
   const pool = await poolPromise;
-  const r = await pool.request().query('SELECT PermKey, IsAllowed FROM StaffPermissions');
+  const [rows] = await pool.query('SELECT PermKey, IsAllowed FROM StaffPermissions');
   const perms = {};
-  PERM_KEYS.forEach((k) => { perms[k] = false; });
-  r.recordset.forEach((row) => {
+  PERM_KEYS.forEach((k) => {
+    perms[k] = false;
+  });
+  rows.forEach((row) => {
     if (PERM_KEYS.includes(row.PermKey)) {
       perms[row.PermKey] = Boolean(row.IsAllowed);
     }
   });
-  return { ...perms, settings: false }; // settings luôn khóa cho admin
+  return { ...perms, settings: false };
 };
 
 exports.updatePermissions = async (p) => {
   const pool = await poolPromise;
   for (const k of PERM_KEYS) {
     if (p[k] !== undefined && p[k] !== null) {
-      await pool.request()
-        .input('key', sql.NVarChar(50), k)
-        .input('val', sql.Bit, p[k])
-        .query(`
-          IF EXISTS (SELECT 1 FROM StaffPermissions WHERE PermKey = @key)
-            UPDATE StaffPermissions SET IsAllowed = @val WHERE PermKey = @key
-          ELSE
-            INSERT INTO StaffPermissions (PermKey, IsAllowed) VALUES (@key, @val)
-        `);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(
+        `
+          INSERT INTO StaffPermissions (PermKey, IsAllowed)
+          VALUES (?, ?)
+          ON DUPLICATE KEY UPDATE IsAllowed = VALUES(IsAllowed)
+        `,
+        [k, p[k] ? 1 : 0]
+      );
     }
   }
   return exports.getPermissions();

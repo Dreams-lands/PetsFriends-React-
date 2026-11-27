@@ -2,7 +2,7 @@ openapi: 3.0.3
 info:
   title: PetsFriend (QLThuCung) RESTful API
   version: 2.0.0
-  description: He thong RESTful API ket noi SQL Server va React cho du an Cua hang & Spa Thu cung PetsFriend.
+  description: He thong RESTful API ket noi MySQL va React cho du an Cua hang & Spa Thu cung PetsFriend.
 
 servers:
   - url: http://localhost:5000/api
@@ -459,7 +459,7 @@ paths:
   /health:
     get:
       tags: [System]
-      summary: Kiem tra trang thai ket noi API va SQL Server QLThuCung
+      summary: Kiem tra trang thai ket noi API va MySQL QLThuCung
       responses:
         "200":
           description: Ket noi he thong hoat dong tot

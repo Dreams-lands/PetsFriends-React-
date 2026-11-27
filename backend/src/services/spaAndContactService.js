@@ -1,4 +1,4 @@
-const { sql, poolPromise } = require('../../../api/db');
+const { poolPromise } = require('../../../api/db');
 const {
   formatCurrency,
   formatIsoDateOnly,
@@ -23,8 +23,8 @@ function toCleanPhone(raw) {
 }
 
 function sqlNormalizedPhoneExpr(col = 'CustomerPhone') {
-  const stripped = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(${col}, ''), '+84', '0'), ' ', ''), '.', ''), '-', ''), '(', ''), ')', '')`;
-  return `CASE WHEN LEFT(${stripped}, 2) = '84' AND LEN(${stripped}) >= 11 THEN '0' + SUBSTRING(${stripped}, 3, 30) ELSE ${stripped} END`;
+  const stripped = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(${col}, ''), '+84', '0'), ' ', ''), '.', ''), '-', ''), '(', ''), ')', '')`;
+  return `(CASE WHEN LEFT(${stripped}, 2) = '84' AND CHAR_LENGTH(${stripped}) >= 11 THEN CONCAT('0', SUBSTRING(${stripped}, 3, 30)) ELSE ${stripped} END)`;
 }
 
 function isValidIsoDate(val) {
@@ -86,15 +86,13 @@ function mapContactMessageRow(row) {
 }
 
 // ============================================================================
-// 1. Spa Packages (dbo.SpaPackages)
+// 1. Spa Packages (SpaPackages)
 // ============================================================================
 
 async function listSpaPackages() {
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .query('SELECT * FROM dbo.SpaPackages ORDER BY PackageId ASC');
-  return result.recordset.map(mapSpaPackageRow);
+  const [rows] = await pool.query('SELECT * FROM SpaPackages ORDER BY PackageId ASC');
+  return rows.map(mapSpaPackageRow);
 }
 
 async function getSpaPackageById(id) {
@@ -104,16 +102,16 @@ async function getSpaPackageById(id) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('packageId', sql.NVarChar(30), packageId)
-    .query('SELECT * FROM dbo.SpaPackages WHERE PackageId = @packageId');
+  const [rows] = await pool.query(
+    'SELECT * FROM SpaPackages WHERE PackageId = ?',
+    [packageId]
+  );
 
-  if (result.recordset.length === 0) {
+  if (rows.length === 0) {
     throw new AppError('Không tìm thấy gói dịch vụ Spa.', 404);
   }
 
-  return mapSpaPackageRow(result.recordset[0]);
+  return mapSpaPackageRow(rows[0]);
 }
 
 async function createSpaPackage(body = {}) {
@@ -149,29 +147,34 @@ async function createSpaPackage(body = {}) {
       : null;
 
   const pool = await poolPromise;
-  const dupCheck = await pool
-    .request()
-    .input('packageId', sql.NVarChar(30), packageId)
-    .query('SELECT PackageId FROM dbo.SpaPackages WHERE PackageId = @packageId');
+  const [dupCheck] = await pool.query(
+    'SELECT PackageId FROM SpaPackages WHERE PackageId = ?',
+    [packageId]
+  );
 
-  if (dupCheck.recordset.length > 0) {
+  if (dupCheck.length > 0) {
     throw new AppError('Mã gói dịch vụ Spa đã tồn tại.', 409);
   }
 
-  const insertRes = await pool
-    .request()
-    .input('packageId', sql.NVarChar(30), packageId)
-    .input('name', sql.NVarChar(150), name.slice(0, 150))
-    .input('description', sql.NVarChar(400), description)
-    .input('price', sql.Decimal(18, 0), Math.round(price))
-    .input('durationLabel', sql.NVarChar(50), durationLabel.slice(0, 50))
-    .query(`
-      INSERT INTO dbo.SpaPackages (PackageId, Name, Description, Price, DurationLabel)
-      OUTPUT INSERTED.*
-      VALUES (@packageId, @name, @description, @price, @durationLabel)
-    `);
+  await pool.query(
+    `
+      INSERT INTO SpaPackages (PackageId, Name, Description, Price, DurationLabel)
+      VALUES (?, ?, ?, ?, ?)
+    `,
+    [
+      packageId,
+      name.slice(0, 150),
+      description,
+      Math.round(price),
+      durationLabel.slice(0, 50),
+    ]
+  );
 
-  return mapSpaPackageRow(insertRes.recordset[0]);
+  const [rows] = await pool.query(
+    'SELECT * FROM SpaPackages WHERE PackageId = ?',
+    [packageId]
+  );
+  return mapSpaPackageRow(rows[0]);
 }
 
 async function updateSpaPackage(id, body = {}) {
@@ -181,16 +184,16 @@ async function updateSpaPackage(id, body = {}) {
   }
 
   const pool = await poolPromise;
-  const existingRes = await pool
-    .request()
-    .input('packageId', sql.NVarChar(30), packageId)
-    .query('SELECT * FROM dbo.SpaPackages WHERE PackageId = @packageId');
+  const [existingRows] = await pool.query(
+    'SELECT * FROM SpaPackages WHERE PackageId = ?',
+    [packageId]
+  );
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy gói dịch vụ Spa.', 404);
   }
 
-  const existing = existingRes.recordset[0];
+  const existing = existingRows[0];
 
   const mergedName =
     body.name !== undefined ? String(body.name || '').trim() : existing.Name;
@@ -229,24 +232,29 @@ async function updateSpaPackage(id, body = {}) {
     }
   }
 
-  const updateRes = await pool
-    .request()
-    .input('packageId', sql.NVarChar(30), packageId)
-    .input('name', sql.NVarChar(150), mergedName.slice(0, 150))
-    .input('description', sql.NVarChar(400), mergedDescription)
-    .input('price', sql.Decimal(18, 0), Math.round(mergedPrice))
-    .input('durationLabel', sql.NVarChar(50), mergedDuration.slice(0, 50))
-    .query(`
-      UPDATE dbo.SpaPackages
-      SET Name = @name,
-          Description = @description,
-          Price = @price,
-          DurationLabel = @durationLabel
-      OUTPUT INSERTED.*
-      WHERE PackageId = @packageId
-    `);
+  await pool.query(
+    `
+      UPDATE SpaPackages
+      SET Name = ?,
+          Description = ?,
+          Price = ?,
+          DurationLabel = ?
+      WHERE PackageId = ?
+    `,
+    [
+      mergedName.slice(0, 150),
+      mergedDescription,
+      Math.round(mergedPrice),
+      mergedDuration.slice(0, 50),
+      packageId,
+    ]
+  );
 
-  return mapSpaPackageRow(updateRes.recordset[0]);
+  const [updatedRows] = await pool.query(
+    'SELECT * FROM SpaPackages WHERE PackageId = ?',
+    [packageId]
+  );
+  return mapSpaPackageRow(updatedRows[0]);
 }
 
 async function deleteSpaPackage(id) {
@@ -256,12 +264,12 @@ async function deleteSpaPackage(id) {
   }
 
   const pool = await poolPromise;
-  const delRes = await pool
-    .request()
-    .input('packageId', sql.NVarChar(30), packageId)
-    .query('DELETE FROM dbo.SpaPackages WHERE PackageId = @packageId');
+  const [delRes] = await pool.query(
+    'DELETE FROM SpaPackages WHERE PackageId = ?',
+    [packageId]
+  );
 
-  if (!delRes.rowsAffected || delRes.rowsAffected[0] === 0) {
+  if (!delRes.affectedRows) {
     throw new AppError('Không tìm thấy gói dịch vụ Spa.', 404);
   }
 
@@ -269,7 +277,7 @@ async function deleteSpaPackage(id) {
 }
 
 // ============================================================================
-// 2. Service Bookings (dbo.ServiceBookings)
+// 2. Service Bookings (ServiceBookings)
 // ============================================================================
 
 async function findBookingRowByIdOrCode(pool, idOrCode) {
@@ -280,16 +288,18 @@ async function findBookingRowByIdOrCode(pool, idOrCode) {
     return null;
   }
 
-  const res = await pool
-    .request()
-    .input('code', sql.NVarChar(50), cleanCode)
-    .query(`
-      SELECT TOP 1 *
-      FROM dbo.ServiceBookings
-      WHERE BookingCode = @code OR BookingId = TRY_CAST(@code AS INT)
-    `);
+  const numericId = /^\d+$/.test(cleanCode) ? Number(cleanCode) : -1;
+  const [rows] = await pool.query(
+    `
+      SELECT *
+      FROM ServiceBookings
+      WHERE BookingCode = ? OR BookingId = ?
+      LIMIT 1
+    `,
+    [cleanCode, numericId]
+  );
 
-  return res.recordset[0] || null;
+  return rows[0] || null;
 }
 
 async function listServiceBookings(queryParams = {}) {
@@ -305,32 +315,32 @@ async function listServiceBookings(queryParams = {}) {
   } = queryParams;
 
   const pool = await poolPromise;
-  const request = pool.request();
-  let query = 'SELECT * FROM dbo.ServiceBookings WHERE 1=1';
+  let query = 'SELECT * FROM ServiceBookings WHERE 1=1';
+  const params = [];
 
   if (userId !== undefined && userId !== null && String(userId).trim() !== '') {
     const uid = Number(userId);
     if (Number.isNaN(uid)) {
       throw new AppError('Mã người dùng không hợp lệ.', 400);
     }
-    query += ' AND UserId = @userId';
-    request.input('userId', sql.Int, uid);
+    query += ' AND UserId = ?';
+    params.push(uid);
   }
 
   if (phone !== undefined && phone !== null && String(phone).trim() !== '') {
     const cleanPhone = toCleanPhone(phone);
-    query += ` AND ${sqlNormalizedPhoneExpr('CustomerPhone')} = @cleanPhone`;
-    request.input('cleanPhone', sql.NVarChar(30), cleanPhone || '__NONE__');
+    query += ` AND ${sqlNormalizedPhoneExpr('CustomerPhone')} = ?`;
+    params.push(cleanPhone || '__NONE__');
   }
 
   if (status && String(status).trim() !== '' && String(status).trim() !== 'all') {
-    query += ' AND Status = @status';
-    request.input('status', sql.NVarChar(20), String(status).trim());
+    query += ' AND Status = ?';
+    params.push(String(status).trim());
   }
 
   if (staffName && String(staffName).trim() !== '' && String(staffName).trim() !== 'all') {
-    query += ' AND StaffName = @staffName';
-    request.input('staffName', sql.NVarChar(120), String(staffName).trim());
+    query += ' AND StaffName = ?';
+    params.push(String(staffName).trim());
   }
 
   if (date && String(date).trim() !== '') {
@@ -338,8 +348,8 @@ async function listServiceBookings(queryParams = {}) {
     if (!isValidIsoDate(dateStr)) {
       throw new AppError('Định dạng ngày lọc không hợp lệ (YYYY-MM-DD).', 400);
     }
-    query += ' AND BookingDate = CAST(@date AS DATE)';
-    request.input('date', sql.VarChar(10), dateStr);
+    query += ' AND BookingDate = CAST(? AS DATE)';
+    params.push(dateStr);
   }
 
   if (fromDate && String(fromDate).trim() !== '') {
@@ -347,8 +357,8 @@ async function listServiceBookings(queryParams = {}) {
     if (!isValidIsoDate(fromStr)) {
       throw new AppError('Định dạng từ ngày không hợp lệ (YYYY-MM-DD).', 400);
     }
-    query += ' AND BookingDate >= CAST(@fromDate AS DATE)';
-    request.input('fromDate', sql.VarChar(10), fromStr);
+    query += ' AND BookingDate >= CAST(? AS DATE)';
+    params.push(fromStr);
   }
 
   if (toDate && String(toDate).trim() !== '') {
@@ -356,38 +366,39 @@ async function listServiceBookings(queryParams = {}) {
     if (!isValidIsoDate(toStr)) {
       throw new AppError('Định dạng đến ngày không hợp lệ (YYYY-MM-DD).', 400);
     }
-    query += ' AND BookingDate <= CAST(@toDate AS DATE)';
-    request.input('toDate', sql.VarChar(10), toStr);
+    query += ' AND BookingDate <= CAST(? AS DATE)';
+    params.push(toStr);
   }
 
   if (search && String(search).trim() !== '') {
     const q = String(search).trim();
     const qDigits = toCleanPhone(q);
-    request.input('searchLike', sql.NVarChar(160), `%${q}%`);
+    const searchLike = `%${q}%`;
     if (qDigits) {
-      request.input('phoneLike', sql.NVarChar(40), `%${qDigits}%`);
       query += ` AND (
-        BookingCode LIKE @searchLike
-        OR CustomerName LIKE @searchLike
-        OR PetNameOrType LIKE @searchLike
-        OR ServiceName LIKE @searchLike
-        OR CustomerPhone LIKE @searchLike
-        OR ${sqlNormalizedPhoneExpr('CustomerPhone')} LIKE @phoneLike
+        BookingCode LIKE ?
+        OR CustomerName LIKE ?
+        OR PetNameOrType LIKE ?
+        OR ServiceName LIKE ?
+        OR CustomerPhone LIKE ?
+        OR ${sqlNormalizedPhoneExpr('CustomerPhone')} LIKE ?
       )`;
+      params.push(searchLike, searchLike, searchLike, searchLike, searchLike, `%${qDigits}%`);
     } else {
       query += ` AND (
-        BookingCode LIKE @searchLike
-        OR CustomerName LIKE @searchLike
-        OR PetNameOrType LIKE @searchLike
-        OR ServiceName LIKE @searchLike
-        OR CustomerPhone LIKE @searchLike
+        BookingCode LIKE ?
+        OR CustomerName LIKE ?
+        OR PetNameOrType LIKE ?
+        OR ServiceName LIKE ?
+        OR CustomerPhone LIKE ?
       )`;
+      params.push(searchLike, searchLike, searchLike, searchLike, searchLike);
     }
   }
 
   query += ' ORDER BY BookingDate DESC, CreatedAt DESC, BookingId DESC';
-  const result = await request.query(query);
-  return result.recordset.map(mapBookingRow);
+  const [rows] = await pool.query(query, params);
+  return rows.map(mapBookingRow);
 }
 
 async function lookupServiceBooking({ phone, bookingCode, code } = {}) {
@@ -405,22 +416,22 @@ async function lookupServiceBooking({ phone, bookingCode, code } = {}) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('cleanCode', sql.NVarChar(30), cleanCode)
-    .input('cleanPhone', sql.NVarChar(30), cleanPhone)
-    .query(`
-      SELECT TOP 1 *
-      FROM dbo.ServiceBookings
-      WHERE UPPER(BookingCode) = @cleanCode
-        AND ${sqlNormalizedPhoneExpr('CustomerPhone')} = @cleanPhone
-    `);
+  const [rows] = await pool.query(
+    `
+      SELECT *
+      FROM ServiceBookings
+      WHERE UPPER(BookingCode) = ?
+        AND ${sqlNormalizedPhoneExpr('CustomerPhone')} = ?
+      LIMIT 1
+    `,
+    [cleanCode, cleanPhone]
+  );
 
-  if (result.recordset.length === 0) {
+  if (rows.length === 0) {
     throw new AppError('Không tìm thấy lịch hẹn khớp với thông tin tra cứu.', 404);
   }
 
-  return mapBookingRow(result.recordset[0]);
+  return mapBookingRow(rows[0]);
 }
 
 async function getServiceBookingById(id) {
@@ -435,10 +446,10 @@ async function getServiceBookingById(id) {
 async function pickAvailableStaff(pool, bookingDate, timeSlot) {
   let roster = DEFAULT_STAFF_ROSTER;
   try {
-    const rosterRes = await pool
-      .request()
-      .query('SELECT StaffName FROM dbo.StaffRoster ORDER BY StaffId ASC');
-    const names = rosterRes.recordset
+    const [rosterRows] = await pool.query(
+      'SELECT StaffName FROM StaffRoster ORDER BY StaffId ASC'
+    );
+    const names = rosterRows
       .map((r) => String(r.StaffName || '').trim())
       .filter(Boolean);
     if (names.length > 0) {
@@ -448,21 +459,20 @@ async function pickAvailableStaff(pool, bookingDate, timeSlot) {
     roster = DEFAULT_STAFF_ROSTER;
   }
 
-  const busyRes = await pool
-    .request()
-    .input('bookingDate', sql.VarChar(10), bookingDate)
-    .input('timeSlot', sql.NVarChar(40), timeSlot)
-    .query(`
+  const [busyRows] = await pool.query(
+    `
       SELECT DISTINCT StaffName
-      FROM dbo.ServiceBookings
-      WHERE BookingDate = CAST(@bookingDate AS DATE)
-        AND LOWER(LTRIM(RTRIM(TimeSlot))) = LOWER(LTRIM(RTRIM(@timeSlot)))
-        AND Status = N'upcoming'
+      FROM ServiceBookings
+      WHERE BookingDate = CAST(? AS DATE)
+        AND LOWER(TRIM(TimeSlot)) = LOWER(TRIM(?))
+        AND Status = 'upcoming'
         AND StaffName IS NOT NULL
-    `);
+    `,
+    [bookingDate, timeSlot]
+  );
 
   const busyLower = new Set(
-    busyRes.recordset.map((r) => String(r.StaffName || '').trim().toLowerCase())
+    busyRows.map((r) => String(r.StaffName || '').trim().toLowerCase())
   );
   const available = roster.find((name) => !busyLower.has(name.toLowerCase()));
   return available || roster[0] || 'Linh Phạm';
@@ -495,12 +505,12 @@ async function createServiceBooking(body = {}, reqUser = null) {
   let matchedPkg = null;
   if (body.packageId !== undefined && body.packageId !== null && String(body.packageId).trim() !== '') {
     const pkgId = String(body.packageId).trim();
-    const pkgRes = await pool
-      .request()
-      .input('pkgId', sql.NVarChar(30), pkgId)
-      .query('SELECT * FROM dbo.SpaPackages WHERE PackageId = @pkgId');
-    if (pkgRes.recordset.length > 0) {
-      matchedPkg = pkgRes.recordset[0];
+    const [pkgRows] = await pool.query(
+      'SELECT * FROM SpaPackages WHERE PackageId = ?',
+      [pkgId]
+    );
+    if (pkgRows.length > 0) {
+      matchedPkg = pkgRows[0];
       validPackageId = matchedPkg.PackageId;
     }
   }
@@ -530,21 +540,22 @@ async function createServiceBooking(body = {}, reqUser = null) {
     if (explicitCode.length > 20) {
       throw new AppError('Mã lịch hẹn không được vượt quá 20 ký tự.', 400);
     }
-    const dupRes = await pool
-      .request()
-      .input('code', sql.NVarChar(20), explicitCode)
-      .query('SELECT BookingId FROM dbo.ServiceBookings WHERE UPPER(BookingCode) = UPPER(@code)');
-    if (dupRes.recordset.length > 0) {
+    const [dupRows] = await pool.query(
+      'SELECT BookingId FROM ServiceBookings WHERE UPPER(BookingCode) = UPPER(?)',
+      [explicitCode]
+    );
+    if (dupRows.length > 0) {
       throw new AppError('Mã lịch hẹn đã tồn tại.', 409);
     }
   } else {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const candidate = `BK${Math.floor(100000 + Math.random() * 899999)}`;
-      const dupRes = await pool
-        .request()
-        .input('code', sql.NVarChar(20), candidate)
-        .query('SELECT BookingId FROM dbo.ServiceBookings WHERE BookingCode = @code');
-      if (dupRes.recordset.length === 0) {
+      // eslint-disable-next-line no-await-in-loop
+      const [dupRows] = await pool.query(
+        'SELECT BookingId FROM ServiceBookings WHERE BookingCode = ?',
+        [candidate]
+      );
+      if (dupRows.length === 0) {
         bookingCode = candidate;
         break;
       }
@@ -558,11 +569,10 @@ async function createServiceBooking(body = {}, reqUser = null) {
   if (body.userId !== undefined && body.userId !== null && String(body.userId).trim() !== '') {
     const parsedUid = Number(body.userId);
     if (!Number.isNaN(parsedUid) && parsedUid > 0) {
-      const uRes = await pool
-        .request()
-        .input('uid', sql.Int, parsedUid)
-        .query('SELECT UserId FROM dbo.Users WHERE UserId = @uid');
-      if (uRes.recordset.length > 0) {
+      const [uRows] = await pool.query('SELECT UserId FROM Users WHERE UserId = ?', [
+        parsedUid,
+      ]);
+      if (uRows.length > 0) {
         resolvedUserId = parsedUid;
       }
     }
@@ -595,33 +605,35 @@ async function createServiceBooking(body = {}, reqUser = null) {
     ? explicitStaff.slice(0, 120)
     : (await pickAvailableStaff(pool, bookingDate, timeSlot)).slice(0, 120);
 
-  const insertRes = await pool
-    .request()
-    .input('bookingCode', sql.NVarChar(20), bookingCode)
-    .input('userId', sql.Int, resolvedUserId)
-    .input('packageId', sql.NVarChar(30), validPackageId)
-    .input('serviceName', sql.NVarChar(150), serviceName.slice(0, 150))
-    .input('petNameOrType', sql.NVarChar(120), petNameOrType)
-    .input('bookingDate', sql.VarChar(10), bookingDate)
-    .input('timeSlot', sql.NVarChar(40), timeSlot)
-    .input('price', sql.Decimal(18, 0), Math.round(price))
-    .input('customerName', sql.NVarChar(120), customerName)
-    .input('customerPhone', sql.NVarChar(20), customerPhone)
-    .input('staffName', sql.NVarChar(120), staffName)
-    .input('note', sql.NVarChar(400), note)
-    .query(`
-      INSERT INTO dbo.ServiceBookings (
+  const [insertRes] = await pool.query(
+    `
+      INSERT INTO ServiceBookings (
         BookingCode, UserId, PackageId, ServiceName, PetNameOrType,
         BookingDate, TimeSlot, Price, Status, CustomerName, CustomerPhone, StaffName, Note
       )
-      OUTPUT INSERTED.*
-      VALUES (
-        @bookingCode, @userId, @packageId, @serviceName, @petNameOrType,
-        CAST(@bookingDate AS DATE), @timeSlot, @price, N'upcoming', @customerName, @customerPhone, @staffName, @note
-      )
-    `);
+      VALUES (?, ?, ?, ?, ?, CAST(? AS DATE), ?, ?, 'upcoming', ?, ?, ?, ?)
+    `,
+    [
+      bookingCode,
+      resolvedUserId,
+      validPackageId,
+      serviceName.slice(0, 150),
+      petNameOrType,
+      bookingDate,
+      timeSlot,
+      Math.round(price),
+      customerName,
+      customerPhone,
+      staffName,
+      note,
+    ]
+  );
 
-  return mapBookingRow(insertRes.recordset[0]);
+  const [insertedRows] = await pool.query(
+    'SELECT * FROM ServiceBookings WHERE BookingId = ?',
+    [insertRes.insertId]
+  );
+  return mapBookingRow(insertedRows[0]);
 }
 
 async function updateServiceBooking(id, body = {}) {
@@ -725,36 +737,41 @@ async function updateServiceBooking(id, body = {}) {
         : String(body.note).trim().slice(0, 400);
   }
 
-  const updateRes = await pool
-    .request()
-    .input('bookingId', sql.Int, existing.BookingId)
-    .input('status', sql.NVarChar(20), mergedStatus)
-    .input('staffName', sql.NVarChar(120), mergedStaffName)
-    .input('bookingDate', sql.VarChar(10), mergedBookingDate)
-    .input('timeSlot', sql.NVarChar(40), mergedTimeSlot)
-    .input('petNameOrType', sql.NVarChar(120), mergedPetName)
-    .input('serviceName', sql.NVarChar(150), mergedServiceName)
-    .input('price', sql.Decimal(18, 0), Math.round(mergedPrice))
-    .input('customerName', sql.NVarChar(120), mergedCustomerName)
-    .input('customerPhone', sql.NVarChar(20), mergedCustomerPhone)
-    .input('note', sql.NVarChar(400), mergedNote)
-    .query(`
-      UPDATE dbo.ServiceBookings
-      SET Status = @status,
-          StaffName = @staffName,
-          BookingDate = CAST(@bookingDate AS DATE),
-          TimeSlot = @timeSlot,
-          PetNameOrType = @petNameOrType,
-          ServiceName = @serviceName,
-          Price = @price,
-          CustomerName = @customerName,
-          CustomerPhone = @customerPhone,
-          Note = @note
-      OUTPUT INSERTED.*
-      WHERE BookingId = @bookingId
-    `);
+  await pool.query(
+    `
+      UPDATE ServiceBookings
+      SET Status = ?,
+          StaffName = ?,
+          BookingDate = CAST(? AS DATE),
+          TimeSlot = ?,
+          PetNameOrType = ?,
+          ServiceName = ?,
+          Price = ?,
+          CustomerName = ?,
+          CustomerPhone = ?,
+          Note = ?
+      WHERE BookingId = ?
+    `,
+    [
+      mergedStatus,
+      mergedStaffName,
+      mergedBookingDate,
+      mergedTimeSlot,
+      mergedPetName,
+      mergedServiceName,
+      Math.round(mergedPrice),
+      mergedCustomerName,
+      mergedCustomerPhone,
+      mergedNote,
+      existing.BookingId,
+    ]
+  );
 
-  return mapBookingRow(updateRes.recordset[0]);
+  const [updatedRows] = await pool.query(
+    'SELECT * FROM ServiceBookings WHERE BookingId = ?',
+    [existing.BookingId]
+  );
+  return mapBookingRow(updatedRows[0]);
 }
 
 async function cancelServiceBooking(id, { reqUser = null, phone = '' } = {}) {
@@ -797,19 +814,19 @@ async function cancelServiceBooking(id, { reqUser = null, phone = '' } = {}) {
     }
   }
 
-  const updateRes = await pool
-    .request()
-    .input('bookingId', sql.Int, existing.BookingId)
-    .query(`
-      UPDATE dbo.ServiceBookings
-      SET Status = N'cancelled'
-      OUTPUT INSERTED.*
-      WHERE BookingId = @bookingId
-    `);
+  await pool.query(
+    "UPDATE ServiceBookings SET Status = 'cancelled' WHERE BookingId = ?",
+    [existing.BookingId]
+  );
+
+  const [updatedRows] = await pool.query(
+    'SELECT * FROM ServiceBookings WHERE BookingId = ?',
+    [existing.BookingId]
+  );
 
   return {
     alreadyCancelled: false,
-    booking: mapBookingRow(updateRes.recordset[0]),
+    booking: mapBookingRow(updatedRows[0]),
   };
 }
 
@@ -821,16 +838,14 @@ async function deleteServiceBooking(id) {
     throw new AppError('Mã lịch hẹn không hợp lệ.', 400);
   }
 
+  const numericId = /^\d+$/.test(cleanCode) ? Number(cleanCode) : -1;
   const pool = await poolPromise;
-  const delRes = await pool
-    .request()
-    .input('code', sql.NVarChar(50), cleanCode)
-    .query(`
-      DELETE FROM dbo.ServiceBookings
-      WHERE BookingCode = @code OR BookingId = TRY_CAST(@code AS INT)
-    `);
+  const [delRes] = await pool.query(
+    'DELETE FROM ServiceBookings WHERE BookingCode = ? OR BookingId = ?',
+    [cleanCode, numericId]
+  );
 
-  if (!delRes.rowsAffected || delRes.rowsAffected[0] === 0) {
+  if (!delRes.affectedRows) {
     throw new AppError('Không tìm thấy lịch hẹn.', 404);
   }
 
@@ -838,45 +853,46 @@ async function deleteServiceBooking(id) {
 }
 
 // ============================================================================
-// 3. Contact Messages (dbo.ContactMessages)
+// 3. Contact Messages (ContactMessages)
 // ============================================================================
 
 async function listContactMessages({ status, search } = {}) {
   const pool = await poolPromise;
-  const request = pool.request();
-  let query = 'SELECT * FROM dbo.ContactMessages WHERE 1=1';
+  let query = 'SELECT * FROM ContactMessages WHERE 1=1';
+  const params = [];
 
   if (status && String(status).trim() !== '' && String(status).trim() !== 'all') {
-    query += ' AND Status = @status';
-    request.input('status', sql.NVarChar(20), String(status).trim());
+    query += ' AND Status = ?';
+    params.push(String(status).trim());
   }
 
   if (search && String(search).trim() !== '') {
     const q = String(search).trim();
     const qDigits = toCleanPhone(q);
-    request.input('searchLike', sql.NVarChar(200), `%${q}%`);
+    const searchLike = `%${q}%`;
     if (qDigits) {
-      request.input('phoneLike', sql.NVarChar(40), `%${qDigits}%`);
       query += ` AND (
-        SenderName LIKE @searchLike
-        OR SenderPhone LIKE @searchLike
-        OR Topic LIKE @searchLike
-        OR Message LIKE @searchLike
-        OR ${sqlNormalizedPhoneExpr('SenderPhone')} LIKE @phoneLike
+        SenderName LIKE ?
+        OR SenderPhone LIKE ?
+        OR Topic LIKE ?
+        OR Message LIKE ?
+        OR ${sqlNormalizedPhoneExpr('SenderPhone')} LIKE ?
       )`;
+      params.push(searchLike, searchLike, searchLike, searchLike, `%${qDigits}%`);
     } else {
       query += ` AND (
-        SenderName LIKE @searchLike
-        OR SenderPhone LIKE @searchLike
-        OR Topic LIKE @searchLike
-        OR Message LIKE @searchLike
+        SenderName LIKE ?
+        OR SenderPhone LIKE ?
+        OR Topic LIKE ?
+        OR Message LIKE ?
       )`;
+      params.push(searchLike, searchLike, searchLike, searchLike);
     }
   }
 
   query += ' ORDER BY CreatedAt DESC, MessageId DESC';
-  const result = await request.query(query);
-  return result.recordset.map(mapContactMessageRow);
+  const [rows] = await pool.query(query, params);
+  return rows.map(mapContactMessageRow);
 }
 
 async function getContactMessageById(id) {
@@ -886,16 +902,16 @@ async function getContactMessageById(id) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('id', sql.Int, messageId)
-    .query('SELECT * FROM dbo.ContactMessages WHERE MessageId = @id');
+  const [rows] = await pool.query(
+    'SELECT * FROM ContactMessages WHERE MessageId = ?',
+    [messageId]
+  );
 
-  if (result.recordset.length === 0) {
+  if (rows.length === 0) {
     throw new AppError('Không tìm thấy tin nhắn liên hệ.', 404);
   }
 
-  return mapContactMessageRow(result.recordset[0]);
+  return mapContactMessageRow(rows[0]);
 }
 
 async function createContactMessage(body = {}) {
@@ -923,19 +939,24 @@ async function createContactMessage(body = {}) {
   const senderPhone = rawPhone.length > 20 ? cleanPhone.slice(0, 20) : rawPhone;
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('senderName', sql.NVarChar(120), finalName.slice(0, 120))
-    .input('senderPhone', sql.NVarChar(20), senderPhone)
-    .input('topic', sql.NVarChar(150), finalTopic.slice(0, 150))
-    .input('message', sql.NVarChar(1000), finalMsg.slice(0, 1000))
-    .query(`
-      INSERT INTO dbo.ContactMessages (SenderName, SenderPhone, Topic, Message)
-      OUTPUT INSERTED.*
-      VALUES (@senderName, @senderPhone, @topic, @message)
-    `);
+  const [insertRes] = await pool.query(
+    `
+      INSERT INTO ContactMessages (SenderName, SenderPhone, Topic, Message)
+      VALUES (?, ?, ?, ?)
+    `,
+    [
+      finalName.slice(0, 120),
+      senderPhone,
+      finalTopic.slice(0, 150),
+      finalMsg.slice(0, 1000),
+    ]
+  );
 
-  return mapContactMessageRow(result.recordset[0]);
+  const [rows] = await pool.query(
+    'SELECT * FROM ContactMessages WHERE MessageId = ?',
+    [insertRes.insertId]
+  );
+  return mapContactMessageRow(rows[0]);
 }
 
 async function updateContactMessageStatus(id, status) {
@@ -950,22 +971,20 @@ async function updateContactMessageStatus(id, status) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('id', sql.Int, messageId)
-    .input('status', sql.NVarChar(20), nextStatus)
-    .query(`
-      UPDATE dbo.ContactMessages
-      SET Status = @status
-      OUTPUT INSERTED.*
-      WHERE MessageId = @id
-    `);
+  const [updRes] = await pool.query(
+    'UPDATE ContactMessages SET Status = ? WHERE MessageId = ?',
+    [nextStatus, messageId]
+  );
 
-  if (result.recordset.length === 0) {
+  if (updRes.affectedRows === 0) {
     throw new AppError('Không tìm thấy tin nhắn liên hệ.', 404);
   }
 
-  return mapContactMessageRow(result.recordset[0]);
+  const [rows] = await pool.query(
+    'SELECT * FROM ContactMessages WHERE MessageId = ?',
+    [messageId]
+  );
+  return mapContactMessageRow(rows[0]);
 }
 
 async function deleteContactMessage(id) {
@@ -975,12 +994,12 @@ async function deleteContactMessage(id) {
   }
 
   const pool = await poolPromise;
-  const delRes = await pool
-    .request()
-    .input('id', sql.Int, messageId)
-    .query('DELETE FROM dbo.ContactMessages WHERE MessageId = @id');
+  const [delRes] = await pool.query(
+    'DELETE FROM ContactMessages WHERE MessageId = ?',
+    [messageId]
+  );
 
-  if (!delRes.rowsAffected || delRes.rowsAffected[0] === 0) {
+  if (!delRes.affectedRows) {
     throw new AppError('Không tìm thấy tin nhắn liên hệ.', 404);
   }
 

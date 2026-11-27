@@ -54,15 +54,15 @@ app.get('/', (req, res) => {
   res.redirect('/api-docs');
 });
 
-// Kiểm tra trạng thái kết nối API & SQL Server
+// Kiểm tra trạng thái kết nối API & MySQL
 app.get('/api/health', async (req, res) => {
   try {
     const pool = await poolPromise;
-    await pool.request().query('SELECT 1 AS ok');
+    await pool.query('SELECT 1 AS ok');
     res.status(200).json({
       status: 'OK',
       uptime: process.uptime(),
-      message: 'API & SQL Server QLThuCung đang hoạt động tốt!',
+      message: 'API & MySQL QLThuCung đang hoạt động tốt!',
     });
   } catch (err) {
     res.status(500).json({ status: 'ERROR', message: err.message });

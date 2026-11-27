@@ -1,7 +1,6 @@
 const crypto = require('crypto');
-const { sql, poolPromise } = require('../../../api/db');
+const { poolPromise } = require('../../../api/db');
 const {
-  mapOrderRow,
   normalizePhoneDigits,
   formatPaymentStatusLabel,
 } = require('../utils/mappers');
@@ -111,14 +110,12 @@ function mapTransactionRow(row) {
 }
 
 // ============================================================================
-// 1. Cấu hình cổng thanh toán (dbo.PaymentGatewayConfigs)
+// 1. Cấu hình cổng thanh toán (PaymentGatewayConfigs)
 // ============================================================================
 async function loadGatewayRows(pool) {
-  const res = await pool
-    .request()
-    .query('SELECT * FROM dbo.PaymentGatewayConfigs');
+  const [rows] = await pool.query('SELECT * FROM PaymentGatewayConfigs');
   const byGateway = {};
-  for (const row of res.recordset) byGateway[row.Gateway] = row;
+  for (const row of rows) byGateway[row.Gateway] = row;
   return byGateway;
 }
 
@@ -144,7 +141,6 @@ function buildGatewayResponse(byGateway, includeSecrets = false) {
   });
 
   return {
-    // Định dạng khớp 100% với PaymentGatewayConfig của Frontend (AdminSettingsView)
     codEnabled: cod.IsEnabled === undefined ? true : Boolean(cod.IsEnabled),
     codNote: cod.Note || '',
     vnpayEnabled: vnpay.IsEnabled === undefined ? true : Boolean(vnpay.IsEnabled),
@@ -175,7 +171,6 @@ async function updatePaymentGateways(payload = {}) {
   const pool = await poolPromise;
   const byGateway = await loadGatewayRows(pool);
 
-  // Hỗ trợ 2 định dạng: (a) phẳng giống Frontend, (b) { gateways: [{ gateway, isEnabled, ... }] }
   const patches = { cod: {}, vnpay: {}, momo: {} };
   if (Array.isArray(payload.gateways)) {
     for (const g of payload.gateways) {
@@ -205,17 +200,24 @@ async function updatePaymentGateways(payload = {}) {
   if (flat.momoAccessKey !== undefined) patches.momo.accessKey = flat.momoAccessKey;
   if (flat.momoSecretKey !== undefined) patches.momo.secretKey = flat.momoSecretKey;
 
-  // Gộp với dữ liệu hiện tại & kiểm tra hợp lệ
   const merged = {};
   for (const gw of GATEWAYS) {
     const row = byGateway[gw] || {};
     const p = patches[gw];
-    const environment = p.environment !== undefined ? String(p.environment).trim() : row.Environment || (gw === 'cod' ? 'production' : 'sandbox');
+    const environment =
+      p.environment !== undefined
+        ? String(p.environment).trim()
+        : row.Environment || (gw === 'cod' ? 'production' : 'sandbox');
     if (!['sandbox', 'production'].includes(environment)) {
-      throw new AppError(`Môi trường của cổng ${gw.toUpperCase()} chỉ nhận 'sandbox' hoặc 'production'.`, 400);
+      throw new AppError(
+        `Môi trường của cổng ${gw.toUpperCase()} chỉ nhận 'sandbox' hoặc 'production'.`,
+        400
+      );
     }
     const pickSecret = (incoming, current) => {
-      if (incoming === undefined || incoming === null || isMaskedValue(incoming)) return current || null;
+      if (incoming === undefined || incoming === null || isMaskedValue(incoming)) {
+        return current || null;
+      }
       const v = String(incoming).trim();
       return v || null;
     };
@@ -224,13 +226,23 @@ async function updatePaymentGateways(payload = {}) {
         p.displayName !== undefined && String(p.displayName).trim()
           ? String(p.displayName).trim()
           : row.DisplayName || gw.toUpperCase(),
-      isEnabled: p.isEnabled !== undefined ? Boolean(p.isEnabled) : row.IsEnabled === undefined ? true : Boolean(row.IsEnabled),
+      isEnabled:
+        p.isEnabled !== undefined
+          ? Boolean(p.isEnabled)
+          : row.IsEnabled === undefined
+            ? true
+            : Boolean(row.IsEnabled),
       environment,
       merchantCode:
-        p.merchantCode !== undefined ? String(p.merchantCode || '').trim() || null : row.MerchantCode || null,
+        p.merchantCode !== undefined
+          ? String(p.merchantCode || '').trim() || null
+          : row.MerchantCode || null,
       accessKey: pickSecret(p.accessKey, row.AccessKey),
       secretKey: pickSecret(p.secretKey, row.SecretKey),
-      note: p.note !== undefined ? String(p.note || '').trim() || null : row.Note || null,
+      note:
+        p.note !== undefined
+          ? String(p.note || '').trim() || null
+          : row.Note || null,
     };
   }
 
@@ -238,40 +250,45 @@ async function updatePaymentGateways(payload = {}) {
     throw new AppError('Cần bật ít nhất 1 phương thức thanh toán cho cửa hàng.', 400);
   }
 
-  const transaction = new sql.Transaction(pool);
-  await transaction.begin();
+  const conn = await pool.getConnection();
   try {
+    await conn.beginTransaction();
     for (const gw of GATEWAYS) {
       const m = merged[gw];
-      await new sql.Request(transaction)
-        .input('gw', sql.NVarChar(20), gw)
-        .input('displayName', sql.NVarChar(100), m.displayName)
-        .input('isEnabled', sql.Bit, m.isEnabled ? 1 : 0)
-        .input('environment', sql.NVarChar(20), m.environment)
-        .input('merchantCode', sql.NVarChar(100), m.merchantCode)
-        .input('accessKey', sql.NVarChar(200), m.accessKey)
-        .input('secretKey', sql.NVarChar(300), m.secretKey)
-        .input('note', sql.NVarChar(400), m.note)
-        .query(`
-          MERGE dbo.PaymentGatewayConfigs AS t
-          USING (SELECT @gw AS Gateway) AS s ON t.Gateway = s.Gateway
-          WHEN MATCHED THEN UPDATE SET
-            DisplayName = @displayName, IsEnabled = @isEnabled, Environment = @environment,
-            MerchantCode = @merchantCode, AccessKey = @accessKey, SecretKey = @secretKey,
-            Note = @note, UpdatedAt = SYSUTCDATETIME()
-          WHEN NOT MATCHED THEN INSERT
-            (Gateway, DisplayName, IsEnabled, Environment, MerchantCode, AccessKey, SecretKey, Note)
-            VALUES (@gw, @displayName, @isEnabled, @environment, @merchantCode, @accessKey, @secretKey, @note);
-        `);
+      // eslint-disable-next-line no-await-in-loop
+      await conn.query(
+        `
+          INSERT INTO PaymentGatewayConfigs
+            (Gateway, DisplayName, IsEnabled, Environment, MerchantCode, AccessKey, SecretKey, Note, UpdatedAt)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, UTC_TIMESTAMP())
+          ON DUPLICATE KEY UPDATE
+            DisplayName = VALUES(DisplayName),
+            IsEnabled = VALUES(IsEnabled),
+            Environment = VALUES(Environment),
+            MerchantCode = VALUES(MerchantCode),
+            AccessKey = VALUES(AccessKey),
+            SecretKey = VALUES(SecretKey),
+            Note = VALUES(Note),
+            UpdatedAt = UTC_TIMESTAMP()
+        `,
+        [
+          gw,
+          m.displayName.slice(0, 100),
+          m.isEnabled ? 1 : 0,
+          m.environment,
+          m.merchantCode ? m.merchantCode.slice(0, 100) : null,
+          m.accessKey ? m.accessKey.slice(0, 200) : null,
+          m.secretKey ? m.secretKey.slice(0, 300) : null,
+          m.note ? m.note.slice(0, 400) : null,
+        ]
+      );
     }
-    await transaction.commit();
+    await conn.commit();
   } catch (err) {
-    try {
-      await transaction.rollback();
-    } catch (_) {
-      // ignore
-    }
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 
   return getPaymentGateways({ includeSecrets: false });
@@ -374,20 +391,24 @@ function buildMomoResultRawSignature(accessKey, data) {
 // ============================================================================
 // 3. Truy vấn đơn hàng & kiểm tra quyền sở hữu
 // ============================================================================
-async function loadOrderRow(requestOrPool, orderCode, lock = false) {
+async function loadOrderRow(connOrPool, orderCode, lock = false) {
   const code = cleanOrderCode(orderCode);
   if (!code) throw new AppError('Mã đơn hàng không hợp lệ.', 400);
-  const res = await requestOrPool
-    .input('code', sql.NVarChar(60), code)
-    .query(`
-      SELECT TOP 1 *
-      FROM dbo.Orders ${lock ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
-      WHERE UPPER(OrderCode) = @code OR OrderId = TRY_CAST(@code AS INT)
-    `);
-  if (res.recordset.length === 0) {
+  const numericId = /^\d+$/.test(code) ? Number(code) : -1;
+  const [rows] = await connOrPool.query(
+    `
+      SELECT *
+      FROM Orders
+      WHERE UPPER(OrderCode) = ? OR OrderId = ?
+      LIMIT 1
+      ${lock ? 'FOR UPDATE' : ''}
+    `,
+    [code, numericId]
+  );
+  if (rows.length === 0) {
     throw new AppError('Không tìm thấy đơn hàng.', 404);
   }
-  return res.recordset[0];
+  return rows[0];
 }
 
 function assertOrderAccess(order, { requester = null, phone = '' } = {}) {
@@ -436,12 +457,11 @@ function assertOrderPayable(order, expectedGateway) {
 }
 
 async function getMappedOrder(pool, orderId) {
-  const res = await pool
-    .request()
-    .input('orderId', sql.Int, orderId)
-    .query('SELECT * FROM dbo.Orders WHERE OrderId = @orderId');
-  if (res.recordset.length === 0) return null;
-  const [mapped] = await orderService.attachItemsToOrders(pool, res.recordset);
+  const [rows] = await pool.query('SELECT * FROM Orders WHERE OrderId = ?', [
+    orderId,
+  ]);
+  if (rows.length === 0) return null;
+  const [mapped] = await orderService.attachItemsToOrders(pool, rows);
   return mapped;
 }
 
@@ -459,7 +479,7 @@ async function createVnpayPayment(orderCode, options = {}) {
   } = options;
 
   const pool = await poolPromise;
-  const order = await loadOrderRow(pool.request(), orderCode);
+  const order = await loadOrderRow(pool, orderCode);
   assertOrderAccess(order, { requester, phone });
   assertOrderPayable(order, 'vnpay');
 
@@ -501,18 +521,20 @@ async function createVnpayPayment(orderCode, options = {}) {
   const { signData, secureHash } = signVnpay(vnpParams, cfg.hashSecret);
   const paymentUrl = `${cfg.payUrl}?${signData}&vnp_SecureHash=${secureHash}`;
 
-  await pool
-    .request()
-    .input('orderId', sql.Int, order.OrderId)
-    .input('txnRef', sql.NVarChar(60), txnRef)
-    .input('amount', sql.Decimal(18, 0), amount)
-    .input('bankCode', sql.NVarChar(30), vnpParams.vnp_BankCode || null)
-    .input('payUrl', sql.NVarChar(2000), paymentUrl.slice(0, 2000))
-    .input('createdBy', sql.NVarChar(120), requester && requester.username ? requester.username : null)
-    .query(`
-      INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, BankCode, PayUrl, Note, CreatedBy)
-      VALUES (@orderId, @txnRef, N'vnpay', @amount, N'pending', @bankCode, @payUrl, N'Khởi tạo giao dịch VNPay', @createdBy)
-    `);
+  await pool.query(
+    `
+      INSERT INTO PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, BankCode, PayUrl, Note, CreatedBy)
+      VALUES (?, ?, 'vnpay', ?, 'pending', ?, ?, 'Khởi tạo giao dịch VNPay', ?)
+    `,
+    [
+      order.OrderId,
+      txnRef,
+      amount,
+      vnpParams.vnp_BankCode || null,
+      paymentUrl.slice(0, 2000),
+      requester && requester.username ? String(requester.username).slice(0, 120) : null,
+    ]
+  );
 
   return {
     message: 'Đã tạo liên kết thanh toán VNPay.',
@@ -528,9 +550,7 @@ async function createVnpayPayment(orderCode, options = {}) {
 }
 
 /**
- * Xử lý kết quả VNPay trả về (dùng chung cho Return URL & IPN). Idempotent:
- * giao dịch đã xử lý sẽ không bị cập nhật lại.
- * Trả về { RspCode, Message, success, orderCode, responseCode, order }
+ * Xử lý kết quả VNPay trả về (dùng chung cho Return URL & IPN).
  */
 async function processVnpayResult(query = {}) {
   const pool = await poolPromise;
@@ -542,7 +562,8 @@ async function processVnpayResult(query = {}) {
 
   const txnRef = String(query.vnp_TxnRef || '');
   const responseCode = String(query.vnp_ResponseCode || '');
-  const transactionStatus = query.vnp_TransactionStatus !== undefined ? String(query.vnp_TransactionStatus) : '00';
+  const transactionStatus =
+    query.vnp_TransactionStatus !== undefined ? String(query.vnp_TransactionStatus) : '00';
   const paidAmount = Number(query.vnp_Amount || 0) / 100;
   const isSuccess = responseCode === '00' && transactionStatus === '00';
 
@@ -560,7 +581,7 @@ async function processVnpayResult(query = {}) {
 }
 
 /**
- * Chốt kết quả giao dịch cổng online (VNPay / MoMo) trong SQL Transaction.
+ * Chốt kết quả giao dịch cổng online (VNPay / MoMo) trong MySQL Transaction.
  * Mã phản hồi theo chuẩn IPN VNPay: 00 OK, 01 không tìm thấy, 02 đã xác nhận, 04 sai số tiền.
  */
 async function finalizeGatewayTransaction(pool, data) {
@@ -576,29 +597,34 @@ async function finalizeGatewayTransaction(pool, data) {
     failureMessage,
   } = data;
 
-  const transaction = new sql.Transaction(pool);
-  await transaction.begin();
+  const conn = await pool.getConnection();
   let committed = false;
   try {
-    const txRes = await new sql.Request(transaction)
-      .input('txnRef', sql.NVarChar(60), txnRef)
-      .input('gateway', sql.NVarChar(20), gateway)
-      .query(`
-        SELECT TOP 1 t.*, o.OrderCode, o.OrderStatus, o.PaymentStatus AS OrderPaymentStatus, o.TotalAmount
-        FROM dbo.PaymentTransactions t WITH (UPDLOCK, HOLDLOCK)
-        INNER JOIN dbo.Orders o ON o.OrderId = t.OrderId
-        WHERE t.TxnRef = @txnRef AND t.Gateway = @gateway
-      `);
+    await conn.beginTransaction();
 
-    if (txRes.recordset.length === 0) {
-      await transaction.rollback();
+    const [txRows] = await conn.query(
+      `
+        SELECT t.*, o.OrderCode, o.OrderStatus, o.PaymentStatus AS OrderPaymentStatus, o.TotalAmount
+        FROM PaymentTransactions t
+        INNER JOIN Orders o ON o.OrderId = t.OrderId
+        WHERE t.TxnRef = ? AND t.Gateway = ?
+        LIMIT 1
+        FOR UPDATE
+      `,
+      [txnRef, gateway]
+    );
+
+    if (txRows.length === 0) {
+      await conn.rollback();
+      committed = true;
       return { RspCode: '01', Message: 'Order not found', success: false };
     }
 
-    const tx = txRes.recordset[0];
+    const tx = txRows[0];
 
     if (Math.round(Number(tx.Amount)) !== Math.round(Number(paidAmount))) {
-      await transaction.rollback();
+      await conn.rollback();
+      committed = true;
       return {
         RspCode: '04',
         Message: 'Invalid amount',
@@ -608,7 +634,7 @@ async function finalizeGatewayTransaction(pool, data) {
     }
 
     if (tx.Status !== 'pending') {
-      await transaction.commit();
+      await conn.commit();
       committed = true;
       return {
         RspCode: '02',
@@ -625,64 +651,84 @@ async function finalizeGatewayTransaction(pool, data) {
 
     if (isSuccess) {
       const orderCancelled = tx.OrderStatus === 'cancelled';
-      await new sql.Request(transaction)
-        .input('id', sql.Int, tx.TransactionId)
-        .input('status', sql.NVarChar(20), orderCancelled ? 'refunded' : 'success')
-        .input('bankCode', sql.NVarChar(30), bankCode ? String(bankCode).slice(0, 30) : null)
-        .input('transNo', sql.NVarChar(60), gatewayTransNo ? String(gatewayTransNo).slice(0, 60) : null)
-        .input('responseCode', sql.NVarChar(20), String(responseCode).slice(0, 20))
-        .input('note', sql.NVarChar(400), orderCancelled ? 'Thanh toán thành công nhưng đơn đã hủy -> cần hoàn tiền' : 'Thanh toán thành công')
-        .input('raw', sql.NVarChar(sql.MAX), rawJson)
-        .query(`
-          UPDATE dbo.PaymentTransactions
-          SET Status = @status, BankCode = COALESCE(@bankCode, BankCode), GatewayTransNo = @transNo,
-              ResponseCode = @responseCode, Note = @note, RawData = @raw, UpdatedAt = SYSUTCDATETIME()
-          WHERE TransactionId = @id
-        `);
+      await conn.query(
+        `
+          UPDATE PaymentTransactions
+          SET Status = ?,
+              BankCode = COALESCE(?, BankCode),
+              GatewayTransNo = ?,
+              ResponseCode = ?,
+              Note = ?,
+              RawData = ?,
+              UpdatedAt = UTC_TIMESTAMP()
+          WHERE TransactionId = ?
+        `,
+        [
+          orderCancelled ? 'refunded' : 'success',
+          bankCode ? String(bankCode).slice(0, 30) : null,
+          gatewayTransNo ? String(gatewayTransNo).slice(0, 60) : null,
+          String(responseCode).slice(0, 20),
+          orderCancelled
+            ? 'Thanh toán thành công nhưng đơn đã hủy -> cần hoàn tiền'
+            : 'Thanh toán thành công',
+          rawJson,
+          tx.TransactionId,
+        ]
+      );
 
-      await new sql.Request(transaction)
-        .input('orderId', sql.Int, tx.OrderId)
-        .input('ps', sql.NVarChar(20), orderCancelled ? 'refunded' : 'paid')
-        .query(`
-          UPDATE dbo.Orders
-          SET PaymentStatus = @ps, PaidAt = SYSUTCDATETIME()
-          WHERE OrderId = @orderId
-        `);
+      await conn.query(
+        `
+          UPDATE Orders
+          SET PaymentStatus = ?, PaidAt = UTC_TIMESTAMP()
+          WHERE OrderId = ?
+        `,
+        [orderCancelled ? 'refunded' : 'paid', tx.OrderId]
+      );
 
-      // Các giao dịch pending khác của cùng đơn hàng (khách bấm thanh toán nhiều lần) -> failed
-      await new sql.Request(transaction)
-        .input('orderId', sql.Int, tx.OrderId)
-        .input('id', sql.Int, tx.TransactionId)
-        .query(`
-          UPDATE dbo.PaymentTransactions
-          SET Status = N'failed', Note = N'Bị thay thế bởi giao dịch thanh toán thành công khác', UpdatedAt = SYSUTCDATETIME()
-          WHERE OrderId = @orderId AND Status = N'pending' AND TransactionId <> @id
-        `);
+      await conn.query(
+        `
+          UPDATE PaymentTransactions
+          SET Status = 'failed',
+              Note = 'Bị thay thế bởi giao dịch thanh toán thành công khác',
+              UpdatedAt = UTC_TIMESTAMP()
+          WHERE OrderId = ? AND Status = 'pending' AND TransactionId <> ?
+        `,
+        [tx.OrderId, tx.TransactionId]
+      );
     } else {
-      await new sql.Request(transaction)
-        .input('id', sql.Int, tx.TransactionId)
-        .input('bankCode', sql.NVarChar(30), bankCode ? String(bankCode).slice(0, 30) : null)
-        .input('transNo', sql.NVarChar(60), gatewayTransNo ? String(gatewayTransNo).slice(0, 60) : null)
-        .input('responseCode', sql.NVarChar(20), String(responseCode).slice(0, 20))
-        .input('note', sql.NVarChar(400), String(failureMessage || 'Giao dịch thất bại').slice(0, 400))
-        .input('raw', sql.NVarChar(sql.MAX), rawJson)
-        .query(`
-          UPDATE dbo.PaymentTransactions
-          SET Status = N'failed', BankCode = COALESCE(@bankCode, BankCode), GatewayTransNo = @transNo,
-              ResponseCode = @responseCode, Note = @note, RawData = @raw, UpdatedAt = SYSUTCDATETIME()
-          WHERE TransactionId = @id
-        `);
+      await conn.query(
+        `
+          UPDATE PaymentTransactions
+          SET Status = 'failed',
+              BankCode = COALESCE(?, BankCode),
+              GatewayTransNo = ?,
+              ResponseCode = ?,
+              Note = ?,
+              RawData = ?,
+              UpdatedAt = UTC_TIMESTAMP()
+          WHERE TransactionId = ?
+        `,
+        [
+          bankCode ? String(bankCode).slice(0, 30) : null,
+          gatewayTransNo ? String(gatewayTransNo).slice(0, 60) : null,
+          String(responseCode).slice(0, 20),
+          String(failureMessage || 'Giao dịch thất bại').slice(0, 400),
+          rawJson,
+          tx.TransactionId,
+        ]
+      );
 
-      await new sql.Request(transaction)
-        .input('orderId', sql.Int, tx.OrderId)
-        .query(`
-          UPDATE dbo.Orders
-          SET PaymentStatus = N'failed'
-          WHERE OrderId = @orderId AND PaymentStatus = N'unpaid'
-        `);
+      await conn.query(
+        `
+          UPDATE Orders
+          SET PaymentStatus = 'failed'
+          WHERE OrderId = ? AND PaymentStatus = 'unpaid'
+        `,
+        [tx.OrderId]
+      );
     }
 
-    await transaction.commit();
+    await conn.commit();
     committed = true;
 
     return {
@@ -696,13 +742,11 @@ async function finalizeGatewayTransaction(pool, data) {
     };
   } catch (err) {
     if (!committed) {
-      try {
-        await transaction.rollback();
-      } catch (_) {
-        // ignore
-      }
+      await conn.rollback().catch(() => {});
     }
     throw err;
+  } finally {
+    conn.release();
   }
 }
 
@@ -713,7 +757,7 @@ async function createMomoPayment(orderCode, options = {}) {
   const { requester = null, phone = '', redirectUrl = '', sandboxFallback = false } = options;
 
   const pool = await poolPromise;
-  const order = await loadOrderRow(pool.request(), orderCode);
+  const order = await loadOrderRow(pool, orderCode);
   assertOrderAccess(order, { requester, phone });
   assertOrderPayable(order, 'momo');
 
@@ -770,33 +814,36 @@ async function createMomoPayment(orderCode, options = {}) {
     signature,
   };
 
-  // Ghi nhận giao dịch pending trước khi gọi sang MoMo
-  await pool
-    .request()
-    .input('orderId', sql.Int, order.OrderId)
-    .input('txnRef', sql.NVarChar(60), txnRef)
-    .input('amount', sql.Decimal(18, 0), amount)
-    .input('createdBy', sql.NVarChar(120), requester && requester.username ? requester.username : null)
-    .query(`
-      INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, Note, CreatedBy)
-      VALUES (@orderId, @txnRef, N'momo', @amount, N'pending', N'Khởi tạo giao dịch MoMo', @createdBy)
-    `);
+  await pool.query(
+    `
+      INSERT INTO PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, Note, CreatedBy)
+      VALUES (?, ?, 'momo', ?, 'pending', 'Khởi tạo giao dịch MoMo', ?)
+    `,
+    [
+      order.OrderId,
+      txnRef,
+      amount,
+      requester && requester.username ? String(requester.username).slice(0, 120) : null,
+    ]
+  );
 
   const qrScanUrl = `${apiBaseUrl()}/api/payments/qr-scan/${encodeURIComponent(txnRef)}`;
   const expireAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
   const buildLocalSandboxResponse = async (fallbackReason) => {
     const fallbackQr = `momo://app?action=payWithApp&partnerCode=${encodeURIComponent(cfg.partnerCode)}&orderId=${encodeURIComponent(txnRef)}&amount=${amount}`;
-    await pool
-      .request()
-      .input('txnRef', sql.NVarChar(60), txnRef)
-      .input('payUrl', sql.NVarChar(2000), qrScanUrl.slice(0, 2000))
-      .input('note', sql.NVarChar(400), `Khởi tạo QR MoMo Sandbox (${fallbackReason})`.slice(0, 400))
-      .query(`
-        UPDATE dbo.PaymentTransactions
-        SET PayUrl = @payUrl, Note = @note, UpdatedAt = SYSUTCDATETIME()
-        WHERE TxnRef = @txnRef
-      `);
+    await pool.query(
+      `
+        UPDATE PaymentTransactions
+        SET PayUrl = ?, Note = ?, UpdatedAt = UTC_TIMESTAMP()
+        WHERE TxnRef = ?
+      `,
+      [
+        qrScanUrl.slice(0, 2000),
+        `Khởi tạo QR MoMo Sandbox (${fallbackReason})`.slice(0, 400),
+        txnRef,
+      ]
+    );
     return {
       message: 'Đã tạo mã QR thanh toán MoMo (Sandbox).',
       gateway: 'momo',
@@ -825,7 +872,7 @@ async function createMomoPayment(orderCode, options = {}) {
     });
     clearTimeout(timer);
     momoRes = await resp.json();
-  } catch (err) {
+  } catch (_) {
     if (sandboxFallback && cfg.environment === 'sandbox') {
       return buildLocalSandboxResponse('chế độ offline');
     }
@@ -845,15 +892,14 @@ async function createMomoPayment(orderCode, options = {}) {
     throw new AppError(`Cổng MoMo báo lỗi: ${msg}`, 502);
   }
 
-  await pool
-    .request()
-    .input('txnRef', sql.NVarChar(60), txnRef)
-    .input('payUrl', sql.NVarChar(2000), String(momoRes.payUrl).slice(0, 2000))
-    .query(`
-      UPDATE dbo.PaymentTransactions
-      SET PayUrl = @payUrl, UpdatedAt = SYSUTCDATETIME()
-      WHERE TxnRef = @txnRef
-    `);
+  await pool.query(
+    `
+      UPDATE PaymentTransactions
+      SET PayUrl = ?, UpdatedAt = UTC_TIMESTAMP()
+      WHERE TxnRef = ?
+    `,
+    [String(momoRes.payUrl).slice(0, 2000), txnRef]
+  );
 
   return {
     message: 'Đã tạo yêu cầu thanh toán MoMo.',
@@ -871,16 +917,21 @@ async function createMomoPayment(orderCode, options = {}) {
 }
 
 async function markTransactionFailed(pool, txnRef, note, responseCode = null) {
-  await pool
-    .request()
-    .input('txnRef', sql.NVarChar(60), txnRef)
-    .input('note', sql.NVarChar(400), String(note || '').slice(0, 400))
-    .input('rc', sql.NVarChar(20), responseCode)
-    .query(`
-      UPDATE dbo.PaymentTransactions
-      SET Status = N'failed', Note = @note, ResponseCode = COALESCE(@rc, ResponseCode), UpdatedAt = SYSUTCDATETIME()
-      WHERE TxnRef = @txnRef AND Status = N'pending'
-    `);
+  await pool.query(
+    `
+      UPDATE PaymentTransactions
+      SET Status = 'failed',
+          Note = ?,
+          ResponseCode = COALESCE(?, ResponseCode),
+          UpdatedAt = UTC_TIMESTAMP()
+      WHERE TxnRef = ? AND Status = 'pending'
+    `,
+    [
+      String(note || '').slice(0, 400),
+      responseCode ? String(responseCode).slice(0, 20) : null,
+      txnRef,
+    ]
+  );
 }
 
 async function processMomoResult(data = {}) {
@@ -912,17 +963,17 @@ async function processMomoResult(data = {}) {
 // ============================================================================
 async function getOrderPayment(orderCode, { requester = null, phone = '' } = {}) {
   const pool = await poolPromise;
-  const order = await loadOrderRow(pool.request(), orderCode);
+  const order = await loadOrderRow(pool, orderCode);
   assertOrderAccess(order, { requester, phone });
 
-  const txRes = await pool
-    .request()
-    .input('orderId', sql.Int, order.OrderId)
-    .query(`
-      SELECT * FROM dbo.PaymentTransactions
-      WHERE OrderId = @orderId
+  const [txRows] = await pool.query(
+    `
+      SELECT * FROM PaymentTransactions
+      WHERE OrderId = ?
       ORDER BY CreatedAt DESC, TransactionId DESC
-    `);
+    `,
+    [order.OrderId]
+  );
 
   const ps = order.PaymentStatus || 'unpaid';
   return {
@@ -937,17 +988,16 @@ async function getOrderPayment(orderCode, { requester = null, phone = '' } = {})
       order.OrderStatus !== 'cancelled' &&
       ['unpaid', 'failed'].includes(ps) &&
       ['vnpay', 'momo'].includes(order.PaymentMethod),
-    transactions: txRes.recordset.map(mapTransactionRow),
+    transactions: txRows.map(mapTransactionRow),
   };
 }
 
 async function confirmManualPayment(orderCode, { method = 'cash', note = '', actorName = null } = {}) {
   const pool = await poolPromise;
-  const transaction = new sql.Transaction(pool);
-  await transaction.begin();
-  let committed = false;
+  const conn = await pool.getConnection();
   try {
-    const order = await loadOrderRow(new sql.Request(transaction), orderCode, true);
+    await conn.beginTransaction();
+    const order = await loadOrderRow(conn, orderCode, true);
     if (order.OrderStatus === 'cancelled') {
       throw new AppError('Không thể xác nhận thu tiền cho đơn hàng đã hủy.', 400);
     }
@@ -959,162 +1009,181 @@ async function confirmManualPayment(orderCode, { method = 'cash', note = '', act
       ? String(method)
       : 'manual';
 
-    await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .input('txnRef', sql.NVarChar(60), `${order.OrderCode}-MAN-${Date.now()}`)
-      .input('gateway', sql.NVarChar(20), gateway)
-      .input('amount', sql.Decimal(18, 0), Number(order.TotalAmount || 0))
-      .input('note', sql.NVarChar(400), String(note || 'Nhân viên xác nhận đã thu tiền').slice(0, 400))
-      .input('createdBy', sql.NVarChar(120), actorName)
-      .query(`
-        UPDATE dbo.PaymentTransactions
-        SET Status = N'failed', Note = N'Đóng giao dịch chờ do nhân viên xác nhận thu tiền thủ công', UpdatedAt = SYSUTCDATETIME()
-        WHERE OrderId = @orderId AND Status = N'pending';
+    await conn.query(
+      `
+        UPDATE PaymentTransactions
+        SET Status = 'failed',
+            Note = 'Đóng giao dịch chờ do nhân viên xác nhận thu tiền thủ công',
+            UpdatedAt = UTC_TIMESTAMP()
+        WHERE OrderId = ? AND Status = 'pending'
+      `,
+      [order.OrderId]
+    );
 
-        INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
-        VALUES (@orderId, @txnRef, @gateway, @amount, N'success', N'00', @note, @createdBy);
+    await conn.query(
+      `
+        INSERT INTO PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, ResponseCode, Note, CreatedBy)
+        VALUES (?, ?, ?, ?, 'success', '00', ?, ?)
+      `,
+      [
+        order.OrderId,
+        `${order.OrderCode}-MAN-${Date.now()}`,
+        gateway,
+        Number(order.TotalAmount || 0),
+        String(note || 'Nhân viên xác nhận đã thu tiền').slice(0, 400),
+        actorName ? String(actorName).slice(0, 120) : null,
+      ]
+    );
 
-        UPDATE dbo.Orders
-        SET PaymentStatus = N'paid', PaidAt = SYSUTCDATETIME()
-        WHERE OrderId = @orderId;
-      `);
+    await conn.query(
+      `
+        UPDATE Orders
+        SET PaymentStatus = 'paid', PaidAt = UTC_TIMESTAMP()
+        WHERE OrderId = ?
+      `,
+      [order.OrderId]
+    );
 
-    await transaction.commit();
-    committed = true;
+    await conn.commit();
     return {
       message: 'Đã xác nhận thu tiền cho đơn hàng.',
       order: await getMappedOrder(pool, order.OrderId),
     };
   } catch (err) {
-    if (!committed) {
-      try {
-        await transaction.rollback();
-      } catch (_) {
-        // ignore
-      }
-    }
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 }
 
 async function refundPayment(orderCode, { reason = '', actorName = null } = {}) {
   const pool = await poolPromise;
-  const transaction = new sql.Transaction(pool);
-  await transaction.begin();
-  let committed = false;
+  const conn = await pool.getConnection();
   try {
-    const order = await loadOrderRow(new sql.Request(transaction), orderCode, true);
+    await conn.beginTransaction();
+    const order = await loadOrderRow(conn, orderCode, true);
     if (order.PaymentStatus !== 'paid') {
       throw new AppError('Chỉ có thể hoàn tiền cho đơn hàng đã thanh toán.', 400);
     }
 
-    await new sql.Request(transaction)
-      .input('orderId', sql.Int, order.OrderId)
-      .input('note', sql.NVarChar(400), String(reason ? `Hoàn tiền: ${reason}` : 'Hoàn tiền cho khách hàng').slice(0, 400))
-      .input('createdBy', sql.NVarChar(120), actorName)
-      .query(`
-        UPDATE dbo.PaymentTransactions
-        SET Status = N'refunded',
-            Note = LEFT(CONCAT(ISNULL(Note, N''), N' | ', @note), 400),
-            UpdatedAt = SYSUTCDATETIME()
-        WHERE OrderId = @orderId AND Status = N'success';
+    const refundNote = String(
+      reason ? `Hoàn tiền: ${reason}` : 'Hoàn tiền cho khách hàng'
+    ).slice(0, 400);
 
-        UPDATE dbo.Orders SET PaymentStatus = N'refunded' WHERE OrderId = @orderId;
-      `);
+    await conn.query(
+      `
+        UPDATE PaymentTransactions
+        SET Status = 'refunded',
+            Note = LEFT(CONCAT(IFNULL(Note, ''), ' | ', ?), 400),
+            CreatedBy = COALESCE(?, CreatedBy),
+            UpdatedAt = UTC_TIMESTAMP()
+        WHERE OrderId = ? AND Status = 'success'
+      `,
+      [
+        refundNote,
+        actorName ? String(actorName).slice(0, 120) : null,
+        order.OrderId,
+      ]
+    );
 
-    await transaction.commit();
-    committed = true;
+    await conn.query(
+      "UPDATE Orders SET PaymentStatus = 'refunded' WHERE OrderId = ?",
+      [order.OrderId]
+    );
+
+    await conn.commit();
     return {
       message: 'Đã ghi nhận hoàn tiền cho đơn hàng.',
       order: await getMappedOrder(pool, order.OrderId),
     };
   } catch (err) {
-    if (!committed) {
-      try {
-        await transaction.rollback();
-      } catch (_) {
-        // ignore
-      }
-    }
+    await conn.rollback().catch(() => {});
     throw err;
+  } finally {
+    conn.release();
   }
 }
 
 async function listTransactions(filters = {}) {
   const { gateway, status, orderCode, fromDate, toDate, search } = filters;
   const pool = await poolPromise;
-  const request = pool.request();
   let query = `
     SELECT t.*, o.OrderCode, o.CustomerName
-    FROM dbo.PaymentTransactions t
-    INNER JOIN dbo.Orders o ON o.OrderId = t.OrderId
+    FROM PaymentTransactions t
+    INNER JOIN Orders o ON o.OrderId = t.OrderId
     WHERE 1 = 1
   `;
+  const params = [];
 
   if (gateway && gateway !== 'all') {
-    query += ' AND t.Gateway = @gateway';
-    request.input('gateway', sql.NVarChar(20), String(gateway).trim().toLowerCase());
+    query += ' AND t.Gateway = ?';
+    params.push(String(gateway).trim().toLowerCase());
   }
   if (status && status !== 'all') {
     if (!VALID_TX_STATUSES.includes(String(status))) {
       throw new AppError('Trạng thái giao dịch không hợp lệ.', 400);
     }
-    query += ' AND t.Status = @status';
-    request.input('status', sql.NVarChar(20), String(status));
+    query += ' AND t.Status = ?';
+    params.push(String(status));
   }
   if (orderCode) {
-    query += ' AND UPPER(o.OrderCode) = @orderCode';
-    request.input('orderCode', sql.NVarChar(60), cleanOrderCode(orderCode));
+    query += ' AND UPPER(o.OrderCode) = ?';
+    params.push(cleanOrderCode(orderCode));
   }
   if (fromDate) {
-    query += ' AND CAST(t.CreatedAt AS DATE) >= CAST(@fromDate AS DATE)';
-    request.input('fromDate', sql.VarChar(10), String(fromDate).slice(0, 10));
+    query += ' AND DATE(t.CreatedAt) >= CAST(? AS DATE)';
+    params.push(String(fromDate).slice(0, 10));
   }
   if (toDate) {
-    query += ' AND CAST(t.CreatedAt AS DATE) <= CAST(@toDate AS DATE)';
-    request.input('toDate', sql.VarChar(10), String(toDate).slice(0, 10));
+    query += ' AND DATE(t.CreatedAt) <= CAST(? AS DATE)';
+    params.push(String(toDate).slice(0, 10));
   }
   if (search && String(search).trim()) {
-    query += ' AND (o.OrderCode LIKE @q OR t.TxnRef LIKE @q OR o.CustomerName LIKE @q OR t.GatewayTransNo LIKE @q)';
-    request.input('q', sql.NVarChar(150), `%${String(search).trim().replace(/^#/, '')}%`);
+    const q = `%${String(search).trim().replace(/^#/, '')}%`;
+    query += ' AND (o.OrderCode LIKE ? OR t.TxnRef LIKE ? OR o.CustomerName LIKE ? OR t.GatewayTransNo LIKE ?)';
+    params.push(q, q, q, q);
   }
 
   query += ' ORDER BY t.CreatedAt DESC, t.TransactionId DESC';
-  const res = await request.query(query);
-  return res.recordset.map(mapTransactionRow);
+  const [rows] = await pool.query(query, params);
+  return rows.map(mapTransactionRow);
 }
 
 async function getPaymentSummary({ fromDate, toDate } = {}) {
   const pool = await poolPromise;
-  const request = pool.request();
   let where = 'WHERE 1 = 1';
+  const params = [];
   if (fromDate) {
-    where += ' AND CAST(CreatedAt AS DATE) >= CAST(@fromDate AS DATE)';
-    request.input('fromDate', sql.VarChar(10), String(fromDate).slice(0, 10));
+    where += ' AND DATE(CreatedAt) >= CAST(? AS DATE)';
+    params.push(String(fromDate).slice(0, 10));
   }
   if (toDate) {
-    where += ' AND CAST(CreatedAt AS DATE) <= CAST(@toDate AS DATE)';
-    request.input('toDate', sql.VarChar(10), String(toDate).slice(0, 10));
+    where += ' AND DATE(CreatedAt) <= CAST(? AS DATE)';
+    params.push(String(toDate).slice(0, 10));
   }
 
-  const res = await request.query(`
-    SELECT
-      COUNT(*) AS totalOrders,
-      SUM(CASE WHEN PaymentStatus = N'paid' THEN 1 ELSE 0 END) AS paidOrders,
-      SUM(CASE WHEN PaymentStatus = N'unpaid' AND OrderStatus <> N'cancelled' THEN 1 ELSE 0 END) AS unpaidOrders,
-      SUM(CASE WHEN PaymentStatus = N'failed' AND OrderStatus <> N'cancelled' THEN 1 ELSE 0 END) AS failedOrders,
-      SUM(CASE WHEN PaymentStatus = N'refunded' THEN 1 ELSE 0 END) AS refundedOrders,
-      SUM(CASE WHEN PaymentStatus = N'paid' THEN TotalAmount ELSE 0 END) AS collectedAmount,
-      SUM(CASE WHEN PaymentStatus IN (N'unpaid', N'failed') AND OrderStatus <> N'cancelled' THEN TotalAmount ELSE 0 END) AS outstandingAmount,
-      SUM(CASE WHEN PaymentStatus = N'refunded' THEN TotalAmount ELSE 0 END) AS refundedAmount,
-      SUM(CASE WHEN PaymentStatus = N'paid' AND PaymentMethod = N'vnpay' THEN TotalAmount ELSE 0 END) AS paidVnpay,
-      SUM(CASE WHEN PaymentStatus = N'paid' AND PaymentMethod = N'momo' THEN TotalAmount ELSE 0 END) AS paidMomo,
-      SUM(CASE WHEN PaymentStatus = N'paid' AND PaymentMethod = N'cod' THEN TotalAmount ELSE 0 END) AS paidCod
-    FROM dbo.Orders
-    ${where}
-  `);
+  const [rows] = await pool.query(
+    `
+      SELECT
+        COUNT(*) AS totalOrders,
+        SUM(CASE WHEN PaymentStatus = 'paid' THEN 1 ELSE 0 END) AS paidOrders,
+        SUM(CASE WHEN PaymentStatus = 'unpaid' AND OrderStatus <> 'cancelled' THEN 1 ELSE 0 END) AS unpaidOrders,
+        SUM(CASE WHEN PaymentStatus = 'failed' AND OrderStatus <> 'cancelled' THEN 1 ELSE 0 END) AS failedOrders,
+        SUM(CASE WHEN PaymentStatus = 'refunded' THEN 1 ELSE 0 END) AS refundedOrders,
+        SUM(CASE WHEN PaymentStatus = 'paid' THEN TotalAmount ELSE 0 END) AS collectedAmount,
+        SUM(CASE WHEN PaymentStatus IN ('unpaid', 'failed') AND OrderStatus <> 'cancelled' THEN TotalAmount ELSE 0 END) AS outstandingAmount,
+        SUM(CASE WHEN PaymentStatus = 'refunded' THEN TotalAmount ELSE 0 END) AS refundedAmount,
+        SUM(CASE WHEN PaymentStatus = 'paid' AND PaymentMethod = 'vnpay' THEN TotalAmount ELSE 0 END) AS paidVnpay,
+        SUM(CASE WHEN PaymentStatus = 'paid' AND PaymentMethod = 'momo' THEN TotalAmount ELSE 0 END) AS paidMomo,
+        SUM(CASE WHEN PaymentStatus = 'paid' AND PaymentMethod = 'cod' THEN TotalAmount ELSE 0 END) AS paidCod
+      FROM Orders
+      ${where}
+    `,
+    params
+  );
 
-  const r = res.recordset[0] || {};
+  const r = rows[0] || {};
   const n = (v) => Number(v || 0);
   return {
     totalOrders: n(r.totalOrders),
@@ -1134,8 +1203,7 @@ async function getPaymentSummary({ fromDate, toDate } = {}) {
 }
 
 /**
- * Tự động hủy các đơn online chọn VNPay / MoMo nhưng quá hạn chưa thanh toán
- * (giải phóng tồn kho đang bị giữ chỗ). Dùng lại orderService.updateOrderStatus để hoàn kho.
+ * Tự động hủy các đơn online chọn VNPay / MoMo nhưng quá hạn chưa thanh toán.
  */
 async function expireUnpaidOnlineOrders({ minutes = 30, actorName = null } = {}) {
   const mins = Number(minutes);
@@ -1144,35 +1212,39 @@ async function expireUnpaidOnlineOrders({ minutes = 30, actorName = null } = {})
   }
 
   const pool = await poolPromise;
-  const res = await pool
-    .request()
-    .input('mins', sql.Int, mins)
-    .query(`
+  const [rows] = await pool.query(
+    `
       SELECT OrderCode
-      FROM dbo.Orders
-      WHERE OrderSource = N'online'
-        AND OrderStatus = N'pending'
-        AND PaymentMethod IN (N'vnpay', N'momo')
-        AND PaymentStatus IN (N'unpaid', N'failed')
-        AND CreatedAt < DATEADD(MINUTE, -@mins, SYSUTCDATETIME())
-    `);
+      FROM Orders
+      WHERE OrderSource = 'online'
+        AND OrderStatus = 'pending'
+        AND PaymentMethod IN ('vnpay', 'momo')
+        AND PaymentStatus IN ('unpaid', 'failed')
+        AND CreatedAt < DATE_SUB(UTC_TIMESTAMP(), INTERVAL ? MINUTE)
+    `,
+    [mins]
+  );
 
   const expired = [];
-  for (const row of res.recordset) {
+  for (const row of rows) {
     try {
+      // eslint-disable-next-line no-await-in-loop
       await orderService.updateOrderStatus(row.OrderCode, {
         status: 'cancelled',
         staffName: actorName || 'Hệ thống (hết hạn thanh toán)',
       });
-      await pool
-        .request()
-        .input('code', sql.NVarChar(20), row.OrderCode)
-        .query(`
-          UPDATE t SET t.Status = N'failed', t.Note = N'Hết hạn thanh toán - đơn hàng tự động hủy', t.UpdatedAt = SYSUTCDATETIME()
-          FROM dbo.PaymentTransactions t
-          INNER JOIN dbo.Orders o ON o.OrderId = t.OrderId
-          WHERE o.OrderCode = @code AND t.Status = N'pending'
-        `);
+      // eslint-disable-next-line no-await-in-loop
+      await pool.query(
+        `
+          UPDATE PaymentTransactions t
+          INNER JOIN Orders o ON o.OrderId = t.OrderId
+          SET t.Status = 'failed',
+              t.Note = 'Hết hạn thanh toán - đơn hàng tự động hủy',
+              t.UpdatedAt = UTC_TIMESTAMP()
+          WHERE o.OrderCode = ? AND t.Status = 'pending'
+        `,
+        [row.OrderCode]
+      );
       expired.push(row.OrderCode);
     } catch (_) {
       // bỏ qua đơn lỗi, xử lý tiếp các đơn khác
@@ -1191,19 +1263,20 @@ async function getTransactionByRef(txnRef) {
   const cleaned = String(txnRef || '').trim();
   if (!cleaned) throw new AppError('Mã giao dịch không hợp lệ.', 400);
   const pool = await poolPromise;
-  const res = await pool
-    .request()
-    .input('txnRef', sql.NVarChar(60), cleaned)
-    .query(`
-      SELECT TOP 1 t.*, o.OrderCode, o.CustomerName, o.CustomerPhone, o.PaymentStatus AS OrderPaymentStatus
-      FROM dbo.PaymentTransactions t
-      INNER JOIN dbo.Orders o ON o.OrderId = t.OrderId
-      WHERE t.TxnRef = @txnRef
-    `);
-  if (res.recordset.length === 0) {
+  const [rows] = await pool.query(
+    `
+      SELECT t.*, o.OrderCode, o.CustomerName, o.CustomerPhone, o.PaymentStatus AS OrderPaymentStatus
+      FROM PaymentTransactions t
+      INNER JOIN Orders o ON o.OrderId = t.OrderId
+      WHERE t.TxnRef = ?
+      LIMIT 1
+    `,
+    [cleaned]
+  );
+  if (rows.length === 0) {
     throw new AppError('Không tìm thấy giao dịch thanh toán.', 404);
   }
-  const row = res.recordset[0];
+  const row = rows[0];
   return {
     ...mapTransactionRow(row),
     orderCode: row.OrderCode,
@@ -1214,11 +1287,10 @@ async function getTransactionByRef(txnRef) {
 
 /**
  * Xác nhận giả lập quét mã QR trên môi trường Sandbox (phục vụ demo/kiểm thử VNPay & MoMo).
- * Chỉ cho phép khi cổng tương ứng đang ở chế độ 'sandbox' và người gọi chứng minh quyền sở hữu đơn.
  */
 async function sandboxCompletePayment(orderCode, { requester = null, phone = '', outcome = 'success' } = {}) {
   const pool = await poolPromise;
-  const order = await loadOrderRow(pool.request(), orderCode);
+  const order = await loadOrderRow(pool, orderCode);
   assertOrderAccess(order, { requester, phone });
 
   const gateway = String(order.PaymentMethod || '').toLowerCase();
@@ -1235,33 +1307,35 @@ async function sandboxCompletePayment(orderCode, { requester = null, phone = '',
     throw new AppError('Chỉ hỗ trợ xác nhận giả lập quét mã QR khi cổng đang ở môi trường Sandbox.', 403);
   }
 
-  const pendingRes = await pool
-    .request()
-    .input('orderId', sql.Int, order.OrderId)
-    .input('gateway', sql.NVarChar(20), gateway)
-    .query(`
-      SELECT TOP 1 TxnRef
-      FROM dbo.PaymentTransactions
-      WHERE OrderId = @orderId AND Gateway = @gateway AND Status = N'pending'
+  const [pendingRows] = await pool.query(
+    `
+      SELECT TxnRef
+      FROM PaymentTransactions
+      WHERE OrderId = ? AND Gateway = ? AND Status = 'pending'
       ORDER BY CreatedAt DESC, TransactionId DESC
-    `);
+      LIMIT 1
+    `,
+    [order.OrderId, gateway]
+  );
 
-  let txnRef = pendingRes.recordset[0] ? pendingRes.recordset[0].TxnRef : null;
+  let txnRef = pendingRows[0] ? pendingRows[0].TxnRef : null;
   const amount = Number(order.TotalAmount);
 
   if (!txnRef) {
     txnRef = `${order.OrderCode}${Date.now().toString().slice(-8)}`;
-    await pool
-      .request()
-      .input('orderId', sql.Int, order.OrderId)
-      .input('txnRef', sql.NVarChar(60), txnRef)
-      .input('gateway', sql.NVarChar(20), gateway)
-      .input('amount', sql.Decimal(18, 0), amount)
-      .input('createdBy', sql.NVarChar(120), requester && requester.username ? requester.username : null)
-      .query(`
-        INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, Note, CreatedBy)
-        VALUES (@orderId, @txnRef, @gateway, @amount, N'pending', N'Khởi tạo giao dịch QR Sandbox', @createdBy)
-      `);
+    await pool.query(
+      `
+        INSERT INTO PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status, Note, CreatedBy)
+        VALUES (?, ?, ?, ?, 'pending', 'Khởi tạo giao dịch QR Sandbox', ?)
+      `,
+      [
+        order.OrderId,
+        txnRef,
+        gateway,
+        amount,
+        requester && requester.username ? String(requester.username).slice(0, 120) : null,
+      ]
+    );
   }
 
   const normalizedOutcome = String(outcome || 'success').toLowerCase();

@@ -16,7 +16,6 @@ const TEST_PHONE_DIGITS = '0988111222';
 const TEST_CUSTOMER_EMAIL = 'e2e.payment.customer@pethub.vn';
 const TEST_CUSTOMER_PHONE = '0933222111';
 
-let sql;
 let pool;
 let serverProc;
 let adminToken = '';
@@ -119,40 +118,43 @@ async function createOnlineOrder(paymentMethod, quantity = 1, extra = {}) {
 }
 
 async function getStock() {
-  const r = await pool
-    .request()
-    .input('pid', sql.NVarChar(60), TEST_PRODUCT_ID)
-    .query('SELECT StockCount FROM dbo.Products WHERE ProductId = @pid');
-  return r.recordset[0] ? Number(r.recordset[0].StockCount) : null;
+  const [rows] = await pool.query(
+    'SELECT StockCount FROM Products WHERE ProductId = ?',
+    [TEST_PRODUCT_ID]
+  );
+  return rows[0] ? Number(rows[0].StockCount) : null;
 }
 
 async function cleanup() {
   if (!pool) return;
-  await pool.request().query(`
-    DELETE FROM dbo.Orders
-    WHERE CustomerPhone IN (N'${TEST_PHONE_RAW}', N'${TEST_PHONE_DIGITS}');
-  `);
-  await pool.request().query(`DELETE FROM dbo.Products WHERE ProductId = N'${TEST_PRODUCT_ID}';`);
-  await pool.request().query(`DELETE FROM dbo.Users WHERE Email = N'${TEST_CUSTOMER_EMAIL}';`);
+  await pool.query('DELETE FROM Orders WHERE CustomerPhone IN (?, ?)', [
+    TEST_PHONE_RAW,
+    TEST_PHONE_DIGITS,
+  ]);
+  await pool.query('DELETE FROM Products WHERE ProductId = ?', [TEST_PRODUCT_ID]);
+  await pool.query('DELETE FROM Users WHERE Email = ?', [TEST_CUSTOMER_EMAIL]);
 }
 
 async function restoreGateways() {
   if (!pool || gatewaySnapshot.length === 0) return;
   for (const g of gatewaySnapshot) {
-    await pool
-      .request()
-      .input('gw', sql.NVarChar(20), g.Gateway)
-      .input('en', sql.Bit, g.IsEnabled)
-      .input('env', sql.NVarChar(20), g.Environment)
-      .input('mc', sql.NVarChar(100), g.MerchantCode)
-      .input('ak', sql.NVarChar(200), g.AccessKey)
-      .input('sk', sql.NVarChar(300), g.SecretKey)
-      .input('note', sql.NVarChar(400), g.Note)
-      .query(`
-        UPDATE dbo.PaymentGatewayConfigs
-        SET IsEnabled = @en, Environment = @env, MerchantCode = @mc, AccessKey = @ak, SecretKey = @sk, Note = @note
-        WHERE Gateway = @gw
-      `);
+    // eslint-disable-next-line no-await-in-loop
+    await pool.query(
+      `
+        UPDATE PaymentGatewayConfigs
+        SET IsEnabled = ?, Environment = ?, MerchantCode = ?, AccessKey = ?, SecretKey = ?, Note = ?
+        WHERE Gateway = ?
+      `,
+      [
+        g.IsEnabled ? 1 : 0,
+        g.Environment,
+        g.MerchantCode,
+        g.AccessKey,
+        g.SecretKey,
+        g.Note,
+        g.Gateway,
+      ]
+    );
   }
 }
 
@@ -161,27 +163,24 @@ describe('PetsFriend Payment Module Integration Suite (PORT 5064)', () => {
     const prevCwd = process.cwd();
     process.chdir(apiDir);
     const dbMod = require('../../api/db');
-    sql = dbMod.sql;
     pool = await dbMod.poolPromise;
     process.chdir(prevCwd);
 
     await cleanup();
 
-    const snap = await pool.request().query('SELECT * FROM dbo.PaymentGatewayConfigs');
-    gatewaySnapshot = snap.recordset;
+    const [snap] = await pool.query('SELECT * FROM PaymentGatewayConfigs');
+    gatewaySnapshot = snap;
     assert.equal(gatewaySnapshot.length, 3, 'Seed PaymentGatewayConfigs must contain cod, vnpay, momo');
     // Bật đủ 3 cổng cho phiên test
-    await pool.request().query('UPDATE dbo.PaymentGatewayConfigs SET IsEnabled = 1');
+    await pool.query('UPDATE PaymentGatewayConfigs SET IsEnabled = 1');
 
-    await pool
-      .request()
-      .input('pid', sql.NVarChar(60), TEST_PRODUCT_ID)
-      .input('price', sql.Decimal(18, 0), TEST_PRODUCT_PRICE)
-      .input('stock', sql.Int, TEST_PRODUCT_STOCK)
-      .query(`
-        INSERT INTO dbo.Products (ProductId, Brand, Name, CategoryCode, PetType, Price, PrimaryImage, StockCount)
-        VALUES (@pid, N'TEST', N'Sản phẩm kiểm thử thanh toán', N'food', N'both', @price, N'/images/prod-ceramic-bowl.jpg', @stock)
-      `);
+    await pool.query(
+      `
+        INSERT INTO Products (ProductId, Brand, Name, CategoryCode, PetType, Price, PrimaryImage, StockCount)
+        VALUES (?, 'TEST', 'Sản phẩm kiểm thử thanh toán', 'food', 'both', ?, '/images/prod-ceramic-bowl.jpg', ?)
+      `,
+      [TEST_PRODUCT_ID, TEST_PRODUCT_PRICE, TEST_PRODUCT_STOCK]
+    );
 
     let stderr = '';
     serverProc = spawn(process.execPath, ['server.js'], {
@@ -456,12 +455,10 @@ describe('PetsFriend Payment Module Integration Suite (PORT 5064)', () => {
       const o = await createOnlineOrder('momo', 1);
       const orderId = o.data.order.orderId;
       const txnRef = `${o.data.order.id}IPN`;
-      await pool
-        .request()
-        .input('oid', sql.Int, orderId)
-        .input('ref', sql.NVarChar(60), txnRef)
-        .input('amt', sql.Decimal(18, 0), TEST_PRODUCT_PRICE)
-        .query(`INSERT INTO dbo.PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status) VALUES (@oid, @ref, N'momo', @amt, N'pending')`);
+      await pool.query(
+        "INSERT INTO PaymentTransactions (OrderId, TxnRef, Gateway, Amount, Status) VALUES (?, ?, 'momo', ?, 'pending')",
+        [orderId, txnRef, TEST_PRODUCT_PRICE]
+      );
 
       const ipn = {
         partnerCode: 'MOMO',
@@ -602,10 +599,10 @@ describe('PetsFriend Payment Module Integration Suite (PORT 5064)', () => {
       const code = o.data.order.id;
       const stockAfterOrder = await getStock();
       // Giả lập đơn đã tạo cách đây 10 ngày
-      await pool
-        .request()
-        .input('code', sql.NVarChar(20), code)
-        .query(`UPDATE dbo.Orders SET CreatedAt = DATEADD(DAY, -10, SYSUTCDATETIME()) WHERE OrderCode = @code`);
+      await pool.query(
+        'UPDATE Orders SET CreatedAt = DATE_SUB(UTC_TIMESTAMP(), INTERVAL 10 DAY) WHERE OrderCode = ?',
+        [code]
+      );
 
       const bad = await api('/api/payments/expire-unpaid', {
         method: 'POST',

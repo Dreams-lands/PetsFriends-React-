@@ -1,6 +1,6 @@
 # PetsFriend (`QLThuCung`)
 
-Hệ thống website **Cửa hàng thú cưng, Dịch vụ Spa & Quản lý bán hàng đa kênh (Online + POS)** dành cho thú cưng, xây dựng theo kiến trúc **Frontend React + TypeScript**, **Backend RESTful API Node.js/Express** và **SQL Server**.
+Hệ thống website **Cửa hàng thú cưng, Dịch vụ Spa & Quản lý bán hàng đa kênh (Online + POS)** dành cho thú cưng, xây dựng theo kiến trúc **Frontend React + TypeScript**, **Backend RESTful API Node.js/Express** và **MySQL (MySQL Workbench)**.
 
 ---
 
@@ -38,7 +38,7 @@ Hệ thống website **Cửa hàng thú cưng, Dịch vụ Spa & Quản lý bán
 | **Frontend** | React 19, TypeScript, Vite 6, Tailwind CSS v4, React Router v7, Axios, Framer Motion, Recharts, TanStack Table, Lucide React |
 | **Backend API** | Node.js, Express 4, JWT (`jsonwebtoken`), `bcryptjs`, `cors`, `dotenv` |
 | **API Docs** | OpenAPI 3.0.3 (`api/specs/openapi.yaml`), Swagger UI (`swagger-ui-express`) |
-| **Database** | Microsoft SQL Server (`QLThuCung` — 15 bảng), driver `mssql` & `msnodesqlv8` |
+| **Database** | MySQL 8.0 / MySQL Workbench (`QLThuCung`), driver `mysql2/promise` |
 | **Testing** | Node.js built-in test runner (`node --test`) với bộ integration test End-to-End |
 
 ---
@@ -47,55 +47,52 @@ Hệ thống website **Cửa hàng thú cưng, Dịch vụ Spa & Quản lý bán
 
 ```text
 PetsFriends-React-/
-├── PetsFriend.sql          # File SQL duy nhất: tạo DB QLThuCung (15 bảng) & seed dữ liệu mẫu
+├── PetsFriend.sql          # File SQL chuẩn MySQL 8.0: tạo DB QLThuCung & seed dữ liệu mẫu
 ├── api/
-│   ├── db.js               # Kết nối SQL Server (hỗ trợ Windows Auth & SQL Auth)
+│   ├── db.js               # Kết nối MySQL Pool (mysql2/promise)
 │   ├── server.js           # Express server, Swagger UI (/api-docs), /api/health
-│   ├── .env.example        # Mẫu biến môi trường kết nối SQL Server
+│   ├── .env.example        # Mẫu biến môi trường kết nối MySQL
 │   └── specs/openapi.yaml  # Tài liệu đặc tả OpenAPI 3.0.3
 ├── backend/
 │   ├── src/
 │   │   ├── controllers/    # Xử lý request/response cho từng phân hệ
 │   │   ├── middlewares/    # Xác thực JWT, phân quyền RBAC, upload ảnh sản phẩm
 │   │   ├── routes/         # Định tuyến RESTful API (/api/*)
-│   │   ├── services/       # Nghiệp vụ & truy vấn SQL Server
+│   │   ├── services/       # Nghiệp vụ & truy vấn MySQL
 │   │   └── utils/          # Mapper dữ liệu, chuẩn hóa SĐT, Bcrypt & JWT
 │   ├── tests/              # Integration tests (user, full backend, payment)
 │   └── uploads/products/   # Thư mục lưu ảnh sản phẩm tải lên
-├── database/
-│   └── README.md           # Tài liệu mô tả 15 bảng và hướng dẫn chạy PetsFriend.sql
 └── frontend/               # Ứng dụng React + TypeScript (Vite)
 ```
 
 ---
 
-## Hướng dẫn cài đặt & chạy khi mới clone/pull về
+## Hướng dẫn cài đặt & chạy với MySQL Workbench
 
-### 1. Khởi tạo Database trên SQL Server
-Chạy **duy nhất 1 file** [PetsFriend.sql](./PetsFriend.sql) trong SSMS (mở file và nhấn `F5`) hoặc bằng `sqlcmd`:
+### 1. Khởi tạo Database trên MySQL Workbench
+- **Cách 1 (MySQL Workbench):** Mở MySQL Workbench, kết nối vào Local instance MySQL → chọn **File → Open SQL Script...** → mở file [PetsFriend.sql](./PetsFriend.sql) → nhấn biểu tượng tia sét ⚡ (**Execute** / `Ctrl + Shift + Enter`).
+- **Cách 2 (Dòng lệnh CLI):**
+  ```powershell
+  & "C:\Program Files\MySQL\MySQL Server 8.0\bin\mysql.exe" -u root -p --default-character-set=utf8mb4 -e "source PetsFriend.sql"
+  ```
 
-```powershell
-sqlcmd -S localhost -E -C -f 65001 -i PetsFriend.sql
-```
-
-Script viết dạng idempotent (chạy lại không mất dữ liệu), sẽ tạo database `QLThuCung` gồm 15 bảng và nạp sẵn dữ liệu mẫu. Xem chi tiết tại [database/README.md](./database/README.md).
+Script viết dạng idempotent (chạy lại không mất dữ liệu), tự động tạo database `QLThuCung` (`utf8mb4_unicode_ci`) và nạp sẵn dữ liệu mẫu.
 
 ### 2. Cấu hình biến môi trường Backend (`api/.env`)
-Copy [api/.env.example](./api/.env.example) thành `api/.env` và chỉnh thông tin SQL Server của máy bạn:
+Chỉnh thông tin kết nối MySQL trong file `api/.env` (hoặc copy từ [api/.env.example](./api/.env.example)):
 
-```powershell
-Copy-Item api\.env.example api\.env
+```env
+PORT=5000
+DB_HOST=localhost
+DB_PORT=3306
+DB_NAME=QLThuCung
+DB_USER=root
+DB_PASSWORD=mat_khau_mysql_cua_ban
 ```
-
-- **Windows Authentication:** giữ `DB_AUTH=windows` (đổi `DB_SERVER=.\SQLEXPRESS` nếu dùng SQL Express; máy Windows cần Node.js >= 22 và ODBC Driver 17/18 for SQL Server).
-- **SQL Server Authentication (`sa`):** đặt `DB_AUTH=sql`, điền `DB_USER` và `DB_PASSWORD`.
 
 ### 3. Cài dependencies và chạy Backend + Frontend
 
 ```powershell
-# Cài msnodesqlv8 ở thư mục gốc (cần khi dùng Windows Auth)
-npm install
-
 # Cài dependencies cho backend và api
 cd backend && npm install
 cd ..\api && npm install
@@ -111,5 +108,3 @@ cd frontend
 npm install
 npm run dev
 ```
-
----

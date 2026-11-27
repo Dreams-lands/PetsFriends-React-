@@ -29,7 +29,6 @@ const TEST_BOOKING_PHONE_RAW = '0977-666-555';
 const TEST_BOOKING_PHONE_DIGITS = '0977666555';
 const TEST_CONTACT_PHONE = '0955-444-333';
 
-let sql;
 let pool;
 let serverProc;
 let adminToken = '';
@@ -100,58 +99,65 @@ async function waitForHealth(timeoutMs = 15000) {
 async function cleanupTestArtifacts() {
   if (pool) {
     // 1. Delete test orders & order items
-    await pool.request().query(`
-      DELETE oi
-      FROM dbo.OrderItems oi
-      INNER JOIN dbo.Orders o ON oi.OrderId = o.OrderId
-      WHERE o.OrderCode = N'${TEST_ORDER_CODE}'
-         OR o.CustomerPhone IN (N'${TEST_ORDER_PHONE_RAW}', N'${TEST_ORDER_PHONE_DIGITS}');
-    `);
-    await pool.request().query(`
-      DELETE FROM dbo.Orders
-      WHERE OrderCode = N'${TEST_ORDER_CODE}'
-         OR CustomerPhone IN (N'${TEST_ORDER_PHONE_RAW}', N'${TEST_ORDER_PHONE_DIGITS}');
-    `);
+    await pool.query(
+      `
+        DELETE oi
+        FROM OrderItems oi
+        INNER JOIN Orders o ON oi.OrderId = o.OrderId
+        WHERE o.OrderCode = ?
+           OR o.CustomerPhone IN (?, ?)
+      `,
+      [TEST_ORDER_CODE, TEST_ORDER_PHONE_RAW, TEST_ORDER_PHONE_DIGITS]
+    );
+    await pool.query(
+      `
+        DELETE FROM Orders
+        WHERE OrderCode = ?
+           OR CustomerPhone IN (?, ?)
+      `,
+      [TEST_ORDER_CODE, TEST_ORDER_PHONE_RAW, TEST_ORDER_PHONE_DIGITS]
+    );
 
     // 2. Delete test product reviews & products
-    await pool.request().query(`
-      DELETE FROM dbo.ProductReviews
-      WHERE ProductId IN (N'${TEST_PRODUCT_ID}', N'prod-bad-cat');
-    `);
-    await pool.request().query(`
-      DELETE FROM dbo.Products
-      WHERE ProductId IN (N'${TEST_PRODUCT_ID}', N'prod-bad-cat');
-    `);
+    await pool.query(
+      `DELETE FROM ProductReviews WHERE ProductId IN (?, 'prod-bad-cat')`,
+      [TEST_PRODUCT_ID]
+    );
+    await pool.query(
+      `DELETE FROM Products WHERE ProductId IN (?, 'prod-bad-cat')`,
+      [TEST_PRODUCT_ID]
+    );
 
     // 3. Delete test category
-    await pool.request().query(`
-      DELETE FROM dbo.Categories
-      WHERE CategoryCode = N'${TEST_CATEGORY_CODE}';
-    `);
+    await pool.query('DELETE FROM Categories WHERE CategoryCode = ?', [
+      TEST_CATEGORY_CODE,
+    ]);
 
     // 4. Delete test bookings & spa package
-    await pool.request().query(`
-      DELETE FROM dbo.ServiceBookings
-      WHERE BookingCode = N'${TEST_BOOKING_CODE}'
-         OR CustomerPhone IN (N'${TEST_BOOKING_PHONE_RAW}', N'${TEST_BOOKING_PHONE_DIGITS}');
-    `);
-    await pool.request().query(`
-      DELETE FROM dbo.SpaPackages
-      WHERE PackageId = N'${TEST_SPA_PKG_ID}';
-    `);
+    await pool.query(
+      `
+        DELETE FROM ServiceBookings
+        WHERE BookingCode = ?
+           OR CustomerPhone IN (?, ?)
+      `,
+      [TEST_BOOKING_CODE, TEST_BOOKING_PHONE_RAW, TEST_BOOKING_PHONE_DIGITS]
+    );
+    await pool.query('DELETE FROM SpaPackages WHERE PackageId = ?', [
+      TEST_SPA_PKG_ID,
+    ]);
 
     // 5. Delete test contact messages
-    await pool.request().query(`
-      DELETE FROM dbo.ContactMessages
-      WHERE SenderPhone IN (N'${TEST_CONTACT_PHONE}', N'0955444333')
-         OR Topic = N'E2E Test Support';
-    `);
+    await pool.query(
+      `
+        DELETE FROM ContactMessages
+        WHERE SenderPhone IN (?, '0955444333')
+           OR Topic = 'E2E Test Support'
+      `,
+      [TEST_CONTACT_PHONE]
+    );
 
     // 6. Delete temporary test customer
-    await pool.request().query(`
-      DELETE FROM dbo.Users
-      WHERE Email = N'${TEST_CUSTOMER_EMAIL}';
-    `);
+    await pool.query('DELETE FROM Users WHERE Email = ?', [TEST_CUSTOMER_EMAIL]);
   }
 
   // 7. Delete uploaded test files
@@ -177,7 +183,6 @@ describe('PetsFriend Full Backend & REST API Integration Suite (PORT 5062)', () 
     const prevCwd = process.cwd();
     process.chdir(apiDir);
     const dbMod = require('../../api/db');
-    sql = dbMod.sql;
     pool = await dbMod.poolPromise;
     process.chdir(prevCwd);
 

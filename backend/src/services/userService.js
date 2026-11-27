@@ -1,4 +1,4 @@
-const { sql, poolPromise } = require('../../../api/db');
+const { poolPromise } = require('../../../api/db');
 const { mapUserRow, mapAddressRow, normalizePhoneDigits } = require('../utils/mappers');
 const {
   isBcryptHash,
@@ -16,8 +16,8 @@ class AppError extends Error {
 }
 
 function sqlNormalizedPhoneExpr(col = 'Phone') {
-  const cleaned = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(ISNULL(${col}, N''), N'+84', N'0'), N' ', N''), N'.', N''), N'-', N''), N'(', N''), N')', N'')`;
-  return `(CASE WHEN LEFT(${cleaned}, 2) = N'84' AND LEN(${cleaned}) >= 11 THEN N'0' + SUBSTRING(${cleaned}, 3, 30) ELSE ${cleaned} END)`;
+  const cleaned = `REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(IFNULL(${col}, ''), '+84', '0'), ' ', ''), '.', ''), '-', ''), '(', ''), ')', '')`;
+  return `(CASE WHEN LEFT(${cleaned}, 2) = '84' AND CHAR_LENGTH(${cleaned}) >= 11 THEN CONCAT('0', SUBSTRING(${cleaned}, 3, 30)) ELSE ${cleaned} END)`;
 }
 
 function isValidEmail(email) {
@@ -52,24 +52,20 @@ function normalizeAdminRoleInput(rawRole, strict = false) {
 }
 
 async function fetchUserAddressesAndWishlist(pool, userId) {
-  const [addrRes, wishRes] = await Promise.all([
-    pool
-      .request()
-      .input('userId', sql.Int, userId)
-      .query(
-        'SELECT * FROM dbo.UserAddresses WHERE UserId = @userId ORDER BY IsDefault DESC, AddressId DESC'
-      ),
-    pool
-      .request()
-      .input('userId', sql.Int, userId)
-      .query(
-        'SELECT ProductId FROM dbo.UserWishlists WHERE UserId = @userId ORDER BY CreatedAt DESC'
-      ),
+  const [[addrRows], [wishRows]] = await Promise.all([
+    pool.query(
+      'SELECT * FROM UserAddresses WHERE UserId = ? ORDER BY IsDefault DESC, AddressId DESC',
+      [userId]
+    ),
+    pool.query(
+      'SELECT ProductId FROM UserWishlists WHERE UserId = ? ORDER BY CreatedAt DESC',
+      [userId]
+    ),
   ]);
 
   return {
-    addresses: addrRes.recordset.map(mapAddressRow),
-    wishlist: wishRes.recordset.map((r) => r.ProductId),
+    addresses: addrRows.map(mapAddressRow),
+    wishlist: wishRows.map((r) => r.ProductId),
   };
 }
 
@@ -84,21 +80,20 @@ async function login(payload = {}) {
   const pool = await poolPromise;
   const cleanDigits = normalizePhoneDigits(loginKey);
 
-  const result = await pool
-    .request()
-    .input('loginKey', sql.NVarChar(150), loginKey)
-    .input('cleanDigits', sql.NVarChar(30), cleanDigits)
-    .query(`
+  const [rows] = await pool.query(
+    `
       SELECT UserId, Username, FullName, Email, Phone, PasswordHash, Role, Gender, Status, CreatedAt
-      FROM dbo.Users
-      WHERE LOWER(Email) = LOWER(@loginKey)
-         OR LOWER(Username) = LOWER(@loginKey)
-         OR (@cleanDigits <> N'' AND ${sqlNormalizedPhoneExpr('Phone')} = @cleanDigits)
-      ORDER BY CASE WHEN Role = N'admin' THEN 0 WHEN Role = N'staff' THEN 1 ELSE 2 END, UserId ASC
-    `);
+      FROM Users
+      WHERE LOWER(Email) = LOWER(?)
+         OR LOWER(Username) = LOWER(?)
+         OR (? <> '' AND ${sqlNormalizedPhoneExpr('Phone')} = ?)
+      ORDER BY CASE WHEN Role = 'admin' THEN 0 WHEN Role = 'staff' THEN 1 ELSE 2 END, UserId ASC
+    `,
+    [loginKey, loginKey, cleanDigits, cleanDigits]
+  );
 
   const matchedRows = [];
-  for (const row of result.recordset) {
+  for (const row of rows) {
     // eslint-disable-next-line no-await-in-loop
     const ok = await verifyPassword(password, row.PasswordHash);
     if (ok) {
@@ -122,11 +117,10 @@ async function login(payload = {}) {
 
   if (!isBcryptHash(matchedRow.PasswordHash)) {
     const upgradedHash = await hashPassword(password);
-    await pool
-      .request()
-      .input('userId', sql.Int, matchedRow.UserId)
-      .input('passwordHash', sql.NVarChar(255), upgradedHash)
-      .query('UPDATE dbo.Users SET PasswordHash = @passwordHash WHERE UserId = @userId');
+    await pool.query('UPDATE Users SET PasswordHash = ? WHERE UserId = ?', [
+      upgradedHash,
+      matchedRow.UserId,
+    ]);
   }
 
   const user = mapUserRow(matchedRow);
@@ -171,32 +165,30 @@ async function register(payload = {}) {
 
   const pool = await poolPromise;
 
-  const dupEmail = await pool
-    .request()
-    .input('email', sql.NVarChar(150), resolvedEmail)
-    .query('SELECT UserId FROM dbo.Users WHERE LOWER(Email) = LOWER(@email)');
-  if (dupEmail.recordset.length > 0) {
+  const [dupEmail] = await pool.query(
+    'SELECT UserId FROM Users WHERE LOWER(Email) = LOWER(?)',
+    [resolvedEmail]
+  );
+  if (dupEmail.length > 0) {
     throw new AppError('Email này đã được đăng ký tài khoản.', 409);
   }
 
   if (resolvedUsername) {
-    const dupUser = await pool
-      .request()
-      .input('username', sql.NVarChar(50), resolvedUsername)
-      .query('SELECT UserId FROM dbo.Users WHERE LOWER(Username) = LOWER(@username)');
-    if (dupUser.recordset.length > 0) {
+    const [dupUser] = await pool.query(
+      'SELECT UserId FROM Users WHERE LOWER(Username) = LOWER(?)',
+      [resolvedUsername]
+    );
+    if (dupUser.length > 0) {
       throw new AppError('Tên đăng nhập này đã được sử dụng.', 409);
     }
   }
 
   if (cleanPhone) {
-    const dupPhone = await pool
-      .request()
-      .input('cleanPhone', sql.NVarChar(30), cleanPhone)
-      .query(
-        `SELECT UserId FROM dbo.Users WHERE Role = N'customer' AND ${sqlNormalizedPhoneExpr('Phone')} = @cleanPhone`
-      );
-    if (dupPhone.recordset.length > 0) {
+    const [dupPhone] = await pool.query(
+      `SELECT UserId FROM Users WHERE Role = 'customer' AND ${sqlNormalizedPhoneExpr('Phone')} = ?`,
+      [cleanPhone]
+    );
+    if (dupPhone.length > 0) {
       throw new AppError('Số điện thoại này đã được đăng ký hội viên.', 409);
     }
   }
@@ -204,37 +196,39 @@ async function register(payload = {}) {
   const hashed = await hashPassword(password);
   const safeGender = ['Nam', 'Nữ', 'Khác'].includes(gender) ? gender : 'Nam';
 
-  const insertRes = await pool
-    .request()
-    .input('username', sql.NVarChar(50), resolvedUsername)
-    .input('fullName', sql.NVarChar(120), resolvedName)
-    .input('email', sql.NVarChar(150), resolvedEmail)
-    .input('phone', sql.NVarChar(20), storedPhone)
-    .input('passwordHash', sql.NVarChar(255), hashed)
-    .input('gender', sql.NVarChar(15), safeGender)
-    .query(`
-      INSERT INTO dbo.Users (Username, FullName, Email, Phone, PasswordHash, Role, Gender, Status)
-      OUTPUT INSERTED.*
-      VALUES (@username, @fullName, @email, @phone, @passwordHash, N'customer', @gender, N'active')
-    `);
+  const [insertRes] = await pool.query(
+    `
+      INSERT INTO Users (Username, FullName, Email, Phone, PasswordHash, Role, Gender, Status)
+      VALUES (?, ?, ?, ?, ?, 'customer', ?, 'active')
+    `,
+    [resolvedUsername, resolvedName, resolvedEmail, storedPhone, hashed, safeGender]
+  );
 
-  const user = mapUserRow(insertRes.recordset[0]);
+  const [insertedUsers] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [
+    insertRes.insertId,
+  ]);
+  const user = mapUserRow(insertedUsers[0]);
   const addresses = [];
 
   if (address && String(address).trim()) {
-    const addrRes = await pool
-      .request()
-      .input('userId', sql.Int, user.userId)
-      .input('label', sql.NVarChar(60), 'Nhà riêng')
-      .input('recipient', sql.NVarChar(120), resolvedName)
-      .input('phone', sql.NVarChar(20), storedPhone || '0900000000')
-      .input('fullAddress', sql.NVarChar(300), String(address).trim())
-      .query(`
-        INSERT INTO dbo.UserAddresses (UserId, Label, RecipientName, Phone, FullAddress, IsDefault)
-        OUTPUT INSERTED.*
-        VALUES (@userId, @label, @recipient, @phone, @fullAddress, 1)
-      `);
-    addresses.push(mapAddressRow(addrRes.recordset[0]));
+    const [addrIns] = await pool.query(
+      `
+        INSERT INTO UserAddresses (UserId, Label, RecipientName, Phone, FullAddress, IsDefault)
+        VALUES (?, ?, ?, ?, ?, 1)
+      `,
+      [
+        user.userId,
+        'Nhà riêng',
+        resolvedName,
+        storedPhone || '0900000000',
+        String(address).trim(),
+      ]
+    );
+    const [addrRows] = await pool.query(
+      'SELECT * FROM UserAddresses WHERE AddressId = ?',
+      [addrIns.insertId]
+    );
+    addresses.push(mapAddressRow(addrRows[0]));
   }
 
   const token = signUserToken(user);
@@ -245,16 +239,13 @@ async function getProfileMe(userId) {
   const uid = validateUserId(userId);
   const pool = await poolPromise;
 
-  const userRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT * FROM dbo.Users WHERE UserId = @userId');
+  const [userRows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [uid]);
 
-  if (userRes.recordset.length === 0) {
+  if (userRows.length === 0) {
     throw new AppError('Không tìm thấy tài khoản người dùng.', 404);
   }
 
-  const user = mapUserRow(userRes.recordset[0]);
+  const user = mapUserRow(userRows[0]);
   const { addresses, wishlist } = await fetchUserAddressesAndWishlist(pool, uid);
   return { user, addresses, wishlist };
 }
@@ -266,77 +257,78 @@ async function lookupByPhone(phone) {
   }
 
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('cleanPhone', sql.NVarChar(30), cleanPhone)
-    .query(`
-      SELECT TOP 1 *
-      FROM dbo.Users
-      WHERE ${sqlNormalizedPhoneExpr('Phone')} = @cleanPhone
-      ORDER BY CASE WHEN Role = N'customer' THEN 0 ELSE 1 END, UserId DESC
-    `);
+  const [rows] = await pool.query(
+    `
+      SELECT *
+      FROM Users
+      WHERE ${sqlNormalizedPhoneExpr('Phone')} = ?
+      ORDER BY CASE WHEN Role = 'customer' THEN 0 ELSE 1 END, UserId DESC
+      LIMIT 1
+    `,
+    [cleanPhone]
+  );
 
-  if (result.recordset.length === 0) {
+  if (rows.length === 0) {
     throw new AppError('Chưa có hội viên khớp SĐT này.', 404);
   }
 
-  return { found: true, user: mapUserRow(result.recordset[0]) };
+  return { found: true, user: mapUserRow(rows[0]) };
 }
 
 async function listUsers({ search, role, status } = {}) {
   const pool = await poolPromise;
-  const req = pool.request();
   const clauses = ['1 = 1'];
+  const params = [];
 
   if (role && String(role).trim() && String(role).trim().toLowerCase() !== 'all') {
     const normalizedRole = normalizeAdminRoleInput(role, false);
-    req.input('role', sql.NVarChar(20), normalizedRole);
-    clauses.push('Role = @role');
+    clauses.push('Role = ?');
+    params.push(normalizedRole);
   }
 
   if (status && String(status).trim() && String(status).trim().toLowerCase() !== 'all') {
-    req.input('status', sql.NVarChar(20), String(status).trim().toLowerCase());
-    clauses.push("ISNULL(Status, N'active') = @status");
+    clauses.push("IFNULL(Status, 'active') = ?");
+    params.push(String(status).trim().toLowerCase());
   }
 
   if (search && String(search).trim()) {
     const q = `%${String(search).trim()}%`;
     const cleanDigits = normalizePhoneDigits(search);
-    req.input('q', sql.NVarChar(160), q);
     if (cleanDigits) {
-      req.input('digitsLike', sql.NVarChar(40), `%${cleanDigits}%`);
       clauses.push(
-        `(FullName LIKE @q OR Email LIKE @q OR ISNULL(Phone, N'') LIKE @q OR ISNULL(Username, N'') LIKE @q OR ${sqlNormalizedPhoneExpr('Phone')} LIKE @digitsLike)`
+        `(FullName LIKE ? OR Email LIKE ? OR IFNULL(Phone, '') LIKE ? OR IFNULL(Username, '') LIKE ? OR ${sqlNormalizedPhoneExpr('Phone')} LIKE ?)`
       );
+      params.push(q, q, q, q, `%${cleanDigits}%`);
     } else {
       clauses.push(
-        `(FullName LIKE @q OR Email LIKE @q OR ISNULL(Phone, N'') LIKE @q OR ISNULL(Username, N'') LIKE @q)`
+        `(FullName LIKE ? OR Email LIKE ? OR IFNULL(Phone, '') LIKE ? OR IFNULL(Username, '') LIKE ?)`
       );
+      params.push(q, q, q, q);
     }
   }
 
-  const result = await req.query(`
-    SELECT *
-    FROM dbo.Users
-    WHERE ${clauses.join(' AND ')}
-    ORDER BY UserId DESC
-  `);
+  const [rows] = await pool.query(
+    `
+      SELECT *
+      FROM Users
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY UserId DESC
+    `,
+    params
+  );
 
-  return result.recordset.map(mapUserRow);
+  return rows.map(mapUserRow);
 }
 
 async function getUserById(userId) {
   const uid = validateUserId(userId);
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT * FROM dbo.Users WHERE UserId = @userId');
+  const [rows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [uid]);
 
-  if (result.recordset.length === 0) {
+  if (rows.length === 0) {
     throw new AppError('Không tìm thấy người dùng.', 404);
   }
-  return mapUserRow(result.recordset[0]);
+  return mapUserRow(rows[0]);
 }
 
 async function createUserByAdmin(payload = {}) {
@@ -388,57 +380,58 @@ async function createUserByAdmin(payload = {}) {
 
   const pool = await poolPromise;
 
-  const dupEmail = await pool
-    .request()
-    .input('email', sql.NVarChar(150), resolvedEmail)
-    .query('SELECT UserId FROM dbo.Users WHERE LOWER(Email) = LOWER(@email)');
-  if (dupEmail.recordset.length > 0) {
+  const [dupEmail] = await pool.query(
+    'SELECT UserId FROM Users WHERE LOWER(Email) = LOWER(?)',
+    [resolvedEmail]
+  );
+  if (dupEmail.length > 0) {
     throw new AppError('Email này đã được sử dụng.', 409);
   }
 
   if (resolvedUsername) {
-    const dupUser = await pool
-      .request()
-      .input('username', sql.NVarChar(50), resolvedUsername)
-      .query('SELECT UserId FROM dbo.Users WHERE LOWER(Username) = LOWER(@username)');
-    if (dupUser.recordset.length > 0) {
+    const [dupUser] = await pool.query(
+      'SELECT UserId FROM Users WHERE LOWER(Username) = LOWER(?)',
+      [resolvedUsername]
+    );
+    if (dupUser.length > 0) {
       throw new AppError('Tên đăng nhập này đã được sử dụng.', 409);
     }
   }
 
-  const insertRes = await pool
-    .request()
-    .input('username', sql.NVarChar(50), resolvedUsername)
-    .input('fullName', sql.NVarChar(120), resolvedName)
-    .input('email', sql.NVarChar(150), resolvedEmail)
-    .input('phone', sql.NVarChar(20), storedPhone)
-    .input('passwordHash', sql.NVarChar(255), hashed)
-    .input('role', sql.NVarChar(20), normalizedRole)
-    .input('gender', sql.NVarChar(15), safeGender)
-    .input('status', sql.NVarChar(20), normalizedStatus)
-    .query(`
-      INSERT INTO dbo.Users (Username, FullName, Email, Phone, PasswordHash, Role, Gender, Status)
-      OUTPUT INSERTED.*
-      VALUES (@username, @fullName, @email, @phone, @passwordHash, @role, @gender, @status)
-    `);
+  const [insertRes] = await pool.query(
+    `
+      INSERT INTO Users (Username, FullName, Email, Phone, PasswordHash, Role, Gender, Status)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+    [
+      resolvedUsername,
+      resolvedName,
+      resolvedEmail,
+      storedPhone,
+      hashed,
+      normalizedRole,
+      safeGender,
+      normalizedStatus,
+    ]
+  );
 
-  return mapUserRow(insertRes.recordset[0]);
+  const [rows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [
+    insertRes.insertId,
+  ]);
+  return mapUserRow(rows[0]);
 }
 
 async function updateUserByAdmin(userId, payload = {}) {
   const uid = validateUserId(userId);
   const pool = await poolPromise;
 
-  const existingRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT * FROM dbo.Users WHERE UserId = @userId');
+  const [existingRows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [uid]);
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy người dùng.', 404);
   }
 
-  const existing = existingRes.recordset[0];
+  const existing = existingRows[0];
 
   const mergedName =
     payload.fullName !== undefined || payload.name !== undefined
@@ -500,13 +493,11 @@ async function updateUserByAdmin(userId, payload = {}) {
     currentStatus === 'active' &&
     (mergedRole !== 'admin' || mergedStatus !== 'active')
   ) {
-    const adminCntRes = await pool
-      .request()
-      .input('userId', sql.Int, uid)
-      .query(
-        "SELECT COUNT(*) AS cnt FROM dbo.Users WHERE Role = N'admin' AND ISNULL(Status, N'active') = N'active' AND UserId <> @userId"
-      );
-    if (Number(adminCntRes.recordset[0].cnt) === 0) {
+    const [adminCntRows] = await pool.query(
+      "SELECT COUNT(*) AS cnt FROM Users WHERE Role = 'admin' AND IFNULL(Status, 'active') = 'active' AND UserId <> ?",
+      [uid]
+    );
+    if (Number(adminCntRows[0].cnt) === 0) {
       throw new AppError(
         'Không thể hạ quyền hoặc khóa tài khoản Quản trị viên duy nhất.',
         400
@@ -514,26 +505,20 @@ async function updateUserByAdmin(userId, payload = {}) {
     }
   }
 
-  const dupEmail = await pool
-    .request()
-    .input('email', sql.NVarChar(150), mergedEmail)
-    .input('userId', sql.Int, uid)
-    .query(
-      'SELECT UserId FROM dbo.Users WHERE LOWER(Email) = LOWER(@email) AND UserId <> @userId'
-    );
-  if (dupEmail.recordset.length > 0) {
+  const [dupEmail] = await pool.query(
+    'SELECT UserId FROM Users WHERE LOWER(Email) = LOWER(?) AND UserId <> ?',
+    [mergedEmail, uid]
+  );
+  if (dupEmail.length > 0) {
     throw new AppError('Email này đã thuộc về tài khoản khác.', 409);
   }
 
   if (mergedUsername) {
-    const dupUser = await pool
-      .request()
-      .input('username', sql.NVarChar(50), mergedUsername)
-      .input('userId', sql.Int, uid)
-      .query(
-        'SELECT UserId FROM dbo.Users WHERE LOWER(Username) = LOWER(@username) AND UserId <> @userId'
-      );
-    if (dupUser.recordset.length > 0) {
+    const [dupUser] = await pool.query(
+      'SELECT UserId FROM Users WHERE LOWER(Username) = LOWER(?) AND UserId <> ?',
+      [mergedUsername, uid]
+    );
+    if (dupUser.length > 0) {
       throw new AppError('Tên đăng nhập này đã được sử dụng.', 409);
     }
   }
@@ -546,32 +531,34 @@ async function updateUserByAdmin(userId, payload = {}) {
     mergedPasswordHash = await hashPassword(payload.password);
   }
 
-  const updateRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .input('username', sql.NVarChar(50), mergedUsername)
-    .input('fullName', sql.NVarChar(120), mergedName)
-    .input('email', sql.NVarChar(150), mergedEmail)
-    .input('phone', sql.NVarChar(20), mergedPhone)
-    .input('passwordHash', sql.NVarChar(255), mergedPasswordHash)
-    .input('role', sql.NVarChar(20), mergedRole)
-    .input('gender', sql.NVarChar(15), mergedGender)
-    .input('status', sql.NVarChar(20), mergedStatus)
-    .query(`
-      UPDATE dbo.Users
-      SET Username = @username,
-          FullName = @fullName,
-          Email = @email,
-          Phone = @phone,
-          PasswordHash = @passwordHash,
-          Role = @role,
-          Gender = @gender,
-          Status = @status
-      OUTPUT INSERTED.*
-      WHERE UserId = @userId
-    `);
+  await pool.query(
+    `
+      UPDATE Users
+      SET Username = ?,
+          FullName = ?,
+          Email = ?,
+          Phone = ?,
+          PasswordHash = ?,
+          Role = ?,
+          Gender = ?,
+          Status = ?
+      WHERE UserId = ?
+    `,
+    [
+      mergedUsername,
+      mergedName,
+      mergedEmail,
+      mergedPhone,
+      mergedPasswordHash,
+      mergedRole,
+      mergedGender,
+      mergedStatus,
+      uid,
+    ]
+  );
 
-  return mapUserRow(updateRes.recordset[0]);
+  const [updatedRows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [uid]);
+  return mapUserRow(updatedRows[0]);
 }
 
 async function updateUserRole(userId, role) {
@@ -596,30 +583,24 @@ async function deleteUserByAdmin(userId, requesterUserId = null) {
   }
 
   const pool = await poolPromise;
-  const existingRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT * FROM dbo.Users WHERE UserId = @userId');
+  const [existingRows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [uid]);
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy người dùng.', 404);
   }
 
-  const existing = existingRes.recordset[0];
+  const existing = existingRows[0];
   if (existing.Role === 'admin') {
-    const adminCntRes = await pool
-      .request()
-      .input('userId', sql.Int, uid)
-      .query("SELECT COUNT(*) AS cnt FROM dbo.Users WHERE Role = N'admin' AND UserId <> @userId");
-    if (Number(adminCntRes.recordset[0].cnt) === 0) {
+    const [adminCntRows] = await pool.query(
+      "SELECT COUNT(*) AS cnt FROM Users WHERE Role = 'admin' AND UserId <> ?",
+      [uid]
+    );
+    if (Number(adminCntRows[0].cnt) === 0) {
       throw new AppError('Không thể xóa tài khoản Quản trị viên cuối cùng.', 400);
     }
   }
 
-  await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('DELETE FROM dbo.Users WHERE UserId = @userId');
+  await pool.query('DELETE FROM Users WHERE UserId = ?', [uid]);
 
   return { deleted: true };
 }
@@ -629,16 +610,13 @@ async function updateProfile(userId, payload = {}) {
   const { fullName, name, email, phone, gender } = payload || {};
 
   const pool = await poolPromise;
-  const existingRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT * FROM dbo.Users WHERE UserId = @userId');
+  const [existingRows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [uid]);
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy tài khoản.', 404);
   }
 
-  const existing = existingRes.recordset[0];
+  const existing = existingRows[0];
 
   const mergedName =
     fullName !== undefined || name !== undefined
@@ -654,14 +632,11 @@ async function updateProfile(userId, payload = {}) {
     throw new AppError('Địa chỉ email không hợp lệ.', 400);
   }
 
-  const dupCheck = await pool
-    .request()
-    .input('email', sql.NVarChar(150), mergedEmail)
-    .input('userId', sql.Int, uid)
-    .query(
-      'SELECT UserId FROM dbo.Users WHERE LOWER(Email) = LOWER(@email) AND UserId <> @userId'
-    );
-  if (dupCheck.recordset.length > 0) {
+  const [dupCheck] = await pool.query(
+    'SELECT UserId FROM Users WHERE LOWER(Email) = LOWER(?) AND UserId <> ?',
+    [mergedEmail, uid]
+  );
+  if (dupCheck.length > 0) {
     throw new AppError('Email này đã thuộc về tài khoản khác.', 409);
   }
 
@@ -687,21 +662,17 @@ async function updateProfile(userId, payload = {}) {
     mergedGender = gender;
   }
 
-  const result = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .input('fullName', sql.NVarChar(120), mergedName)
-    .input('email', sql.NVarChar(150), mergedEmail)
-    .input('phone', sql.NVarChar(20), mergedPhone)
-    .input('gender', sql.NVarChar(15), mergedGender)
-    .query(`
-      UPDATE dbo.Users
-      SET FullName = @fullName, Email = @email, Phone = @phone, Gender = @gender
-      OUTPUT INSERTED.*
-      WHERE UserId = @userId
-    `);
+  await pool.query(
+    `
+      UPDATE Users
+      SET FullName = ?, Email = ?, Phone = ?, Gender = ?
+      WHERE UserId = ?
+    `,
+    [mergedName, mergedEmail, mergedPhone, mergedGender, uid]
+  );
 
-  return mapUserRow(result.recordset[0]);
+  const [updatedRows] = await pool.query('SELECT * FROM Users WHERE UserId = ?', [uid]);
+  return mapUserRow(updatedRows[0]);
 }
 
 async function changePassword(userId, payload = {}) {
@@ -716,48 +687,45 @@ async function changePassword(userId, payload = {}) {
   }
 
   const pool = await poolPromise;
-  const userRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT PasswordHash FROM dbo.Users WHERE UserId = @userId');
+  const [userRows] = await pool.query(
+    'SELECT PasswordHash FROM Users WHERE UserId = ?',
+    [uid]
+  );
 
-  if (userRes.recordset.length === 0) {
+  if (userRows.length === 0) {
     throw new AppError('Không tìm thấy tài khoản.', 404);
   }
 
-  const isMatch = await verifyPassword(currentPassword, userRes.recordset[0].PasswordHash);
+  const isMatch = await verifyPassword(currentPassword, userRows[0].PasswordHash);
   if (!isMatch) {
     throw new AppError('Mật khẩu hiện tại không chính xác.', 400);
   }
 
   const hashed = await hashPassword(newPassword);
-  await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .input('passwordHash', sql.NVarChar(255), hashed)
-    .query('UPDATE dbo.Users SET PasswordHash = @passwordHash WHERE UserId = @userId');
+  await pool.query('UPDATE Users SET PasswordHash = ? WHERE UserId = ?', [
+    hashed,
+    uid,
+  ]);
 
   return { updated: true };
 }
 
 async function listAllAddresses() {
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .query('SELECT * FROM dbo.UserAddresses ORDER BY IsDefault DESC, AddressId DESC');
-  return result.recordset.map(mapAddressRow);
+  const [rows] = await pool.query(
+    'SELECT * FROM UserAddresses ORDER BY IsDefault DESC, AddressId DESC'
+  );
+  return rows.map(mapAddressRow);
 }
 
 async function getUserAddresses(userId) {
   const uid = validateUserId(userId);
   const pool = await poolPromise;
-  const result = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query(
-      'SELECT * FROM dbo.UserAddresses WHERE UserId = @userId ORDER BY IsDefault DESC, AddressId DESC'
-    );
-  return result.recordset.map(mapAddressRow);
+  const [rows] = await pool.query(
+    'SELECT * FROM UserAddresses WHERE UserId = ? ORDER BY IsDefault DESC, AddressId DESC',
+    [uid]
+  );
+  return rows.map(mapAddressRow);
 }
 
 async function addUserAddress(userId, payload = {}) {
@@ -775,42 +743,36 @@ async function addUserAddress(userId, payload = {}) {
   }
 
   const pool = await poolPromise;
-  const userCheck = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT UserId FROM dbo.Users WHERE UserId = @userId');
-  if (userCheck.recordset.length === 0) {
+  const [userCheck] = await pool.query('SELECT UserId FROM Users WHERE UserId = ?', [
+    uid,
+  ]);
+  if (userCheck.length === 0) {
     throw new AppError('Không tìm thấy người dùng.', 404);
   }
 
-  const countRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('SELECT COUNT(*) AS cnt FROM dbo.UserAddresses WHERE UserId = @userId');
+  const [countRows] = await pool.query(
+    'SELECT COUNT(*) AS cnt FROM UserAddresses WHERE UserId = ?',
+    [uid]
+  );
 
-  const shouldBeDefault = Boolean(isDefault) || Number(countRes.recordset[0].cnt) === 0;
+  const shouldBeDefault = Boolean(isDefault) || Number(countRows[0].cnt) === 0;
   if (shouldBeDefault) {
-    await pool
-      .request()
-      .input('userId', sql.Int, uid)
-      .query('UPDATE dbo.UserAddresses SET IsDefault = 0 WHERE UserId = @userId');
+    await pool.query('UPDATE UserAddresses SET IsDefault = 0 WHERE UserId = ?', [uid]);
   }
 
-  const insertRes = await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .input('label', sql.NVarChar(60), finalLabel)
-    .input('recipient', sql.NVarChar(120), finalRecipient)
-    .input('phone', sql.NVarChar(20), finalPhone)
-    .input('fullAddress', sql.NVarChar(300), finalAddress)
-    .input('isDefault', sql.Bit, shouldBeDefault ? 1 : 0)
-    .query(`
-      INSERT INTO dbo.UserAddresses (UserId, Label, RecipientName, Phone, FullAddress, IsDefault)
-      OUTPUT INSERTED.*
-      VALUES (@userId, @label, @recipient, @phone, @fullAddress, @isDefault)
-    `);
+  const [insertRes] = await pool.query(
+    `
+      INSERT INTO UserAddresses (UserId, Label, RecipientName, Phone, FullAddress, IsDefault)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `,
+    [uid, finalLabel, finalRecipient, finalPhone, finalAddress, shouldBeDefault ? 1 : 0]
+  );
 
-  return mapAddressRow(insertRes.recordset[0]);
+  const [addrRows] = await pool.query(
+    'SELECT * FROM UserAddresses WHERE AddressId = ?',
+    [insertRes.insertId]
+  );
+  return mapAddressRow(addrRows[0]);
 }
 
 async function updateUserAddress(userId, addressId, payload = {}) {
@@ -820,17 +782,16 @@ async function updateUserAddress(userId, addressId, payload = {}) {
     payload || {};
 
   const pool = await poolPromise;
-  const existingRes = await pool
-    .request()
-    .input('addressId', sql.Int, aid)
-    .input('userId', sql.Int, uid)
-    .query('SELECT * FROM dbo.UserAddresses WHERE AddressId = @addressId AND UserId = @userId');
+  const [existingRows] = await pool.query(
+    'SELECT * FROM UserAddresses WHERE AddressId = ? AND UserId = ?',
+    [aid, uid]
+  );
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy địa chỉ.', 404);
   }
 
-  const existing = existingRes.recordset[0];
+  const existing = existingRows[0];
 
   const mergedLabel =
     label !== undefined ? String(label || '').trim() || existing.Label : existing.Label;
@@ -853,52 +814,50 @@ async function updateUserAddress(userId, addressId, payload = {}) {
     isDefault !== undefined ? Boolean(isDefault) : Boolean(existing.IsDefault);
 
   if (mergedIsDefault) {
-    await pool
-      .request()
-      .input('userId', sql.Int, uid)
-      .input('addressId', sql.Int, aid)
-      .query(
-        'UPDATE dbo.UserAddresses SET IsDefault = 0 WHERE UserId = @userId AND AddressId <> @addressId'
-      );
+    await pool.query(
+      'UPDATE UserAddresses SET IsDefault = 0 WHERE UserId = ? AND AddressId <> ?',
+      [uid, aid]
+    );
   } else if (Boolean(existing.IsDefault) && isDefault === false) {
-    const otherRes = await pool
-      .request()
-      .input('userId', sql.Int, uid)
-      .input('addressId', sql.Int, aid)
-      .query(
-        'SELECT TOP 1 AddressId FROM dbo.UserAddresses WHERE UserId = @userId AND AddressId <> @addressId ORDER BY AddressId DESC'
-      );
-    if (otherRes.recordset.length > 0) {
-      await pool
-        .request()
-        .input('otherId', sql.Int, otherRes.recordset[0].AddressId)
-        .query('UPDATE dbo.UserAddresses SET IsDefault = 1 WHERE AddressId = @otherId');
+    const [otherRows] = await pool.query(
+      'SELECT AddressId FROM UserAddresses WHERE UserId = ? AND AddressId <> ? ORDER BY AddressId DESC LIMIT 1',
+      [uid, aid]
+    );
+    if (otherRows.length > 0) {
+      await pool.query('UPDATE UserAddresses SET IsDefault = 1 WHERE AddressId = ?', [
+        otherRows[0].AddressId,
+      ]);
     } else {
       mergedIsDefault = true;
     }
   }
 
-  const updateRes = await pool
-    .request()
-    .input('addressId', sql.Int, aid)
-    .input('userId', sql.Int, uid)
-    .input('label', sql.NVarChar(60), mergedLabel)
-    .input('recipient', sql.NVarChar(120), mergedRecipient)
-    .input('phone', sql.NVarChar(20), mergedPhone)
-    .input('fullAddress', sql.NVarChar(300), mergedAddress)
-    .input('isDefault', sql.Bit, mergedIsDefault ? 1 : 0)
-    .query(`
-      UPDATE dbo.UserAddresses
-      SET Label = @label,
-          RecipientName = @recipient,
-          Phone = @phone,
-          FullAddress = @fullAddress,
-          IsDefault = @isDefault
-      OUTPUT INSERTED.*
-      WHERE AddressId = @addressId AND UserId = @userId
-    `);
+  await pool.query(
+    `
+      UPDATE UserAddresses
+      SET Label = ?,
+          RecipientName = ?,
+          Phone = ?,
+          FullAddress = ?,
+          IsDefault = ?
+      WHERE AddressId = ? AND UserId = ?
+    `,
+    [
+      mergedLabel,
+      mergedRecipient,
+      mergedPhone,
+      mergedAddress,
+      mergedIsDefault ? 1 : 0,
+      aid,
+      uid,
+    ]
+  );
 
-  return mapAddressRow(updateRes.recordset[0]);
+  const [updatedRows] = await pool.query(
+    'SELECT * FROM UserAddresses WHERE AddressId = ?',
+    [aid]
+  );
+  return mapAddressRow(updatedRows[0]);
 }
 
 async function setDefaultUserAddress(userId, addressId) {
@@ -906,35 +865,25 @@ async function setDefaultUserAddress(userId, addressId) {
   const aid = validateAddressId(addressId);
   const pool = await poolPromise;
 
-  const existingRes = await pool
-    .request()
-    .input('addressId', sql.Int, aid)
-    .input('userId', sql.Int, uid)
-    .query(
-      'SELECT AddressId FROM dbo.UserAddresses WHERE AddressId = @addressId AND UserId = @userId'
-    );
+  const [existingRows] = await pool.query(
+    'SELECT AddressId FROM UserAddresses WHERE AddressId = ? AND UserId = ?',
+    [aid, uid]
+  );
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy địa chỉ.', 404);
   }
 
-  await pool
-    .request()
-    .input('userId', sql.Int, uid)
-    .query('UPDATE dbo.UserAddresses SET IsDefault = 0 WHERE UserId = @userId');
+  await pool.query('UPDATE UserAddresses SET IsDefault = 0 WHERE UserId = ?', [uid]);
+  await pool.query(
+    'UPDATE UserAddresses SET IsDefault = 1 WHERE AddressId = ? AND UserId = ?',
+    [aid, uid]
+  );
 
-  const result = await pool
-    .request()
-    .input('addressId', sql.Int, aid)
-    .input('userId', sql.Int, uid)
-    .query(`
-      UPDATE dbo.UserAddresses
-      SET IsDefault = 1
-      OUTPUT INSERTED.*
-      WHERE AddressId = @addressId AND UserId = @userId
-    `);
-
-  return mapAddressRow(result.recordset[0]);
+  const [rows] = await pool.query('SELECT * FROM UserAddresses WHERE AddressId = ?', [
+    aid,
+  ]);
+  return mapAddressRow(rows[0]);
 }
 
 async function deleteUserAddress(userId, addressId) {
@@ -942,40 +891,27 @@ async function deleteUserAddress(userId, addressId) {
   const aid = validateAddressId(addressId);
   const pool = await poolPromise;
 
-  const existingRes = await pool
-    .request()
-    .input('addressId', sql.Int, aid)
-    .input('userId', sql.Int, uid)
-    .query(
-      'SELECT AddressId, IsDefault FROM dbo.UserAddresses WHERE AddressId = @addressId AND UserId = @userId'
-    );
+  const [existingRows] = await pool.query(
+    'SELECT AddressId, IsDefault FROM UserAddresses WHERE AddressId = ? AND UserId = ?',
+    [aid, uid]
+  );
 
-  if (existingRes.recordset.length === 0) {
+  if (existingRows.length === 0) {
     throw new AppError('Không tìm thấy địa chỉ nhận hàng.', 404);
   }
 
-  const wasDefault = Boolean(existingRes.recordset[0].IsDefault);
+  const wasDefault = Boolean(existingRows[0].IsDefault);
 
-  await pool
-    .request()
-    .input('addressId', sql.Int, aid)
-    .input('userId', sql.Int, uid)
-    .query('DELETE FROM dbo.UserAddresses WHERE AddressId = @addressId AND UserId = @userId');
+  await pool.query(
+    'DELETE FROM UserAddresses WHERE AddressId = ? AND UserId = ?',
+    [aid, uid]
+  );
 
   if (wasDefault) {
-    await pool
-      .request()
-      .input('userId', sql.Int, uid)
-      .query(`
-        UPDATE dbo.UserAddresses
-        SET IsDefault = 1
-        WHERE AddressId = (
-          SELECT TOP 1 AddressId
-          FROM dbo.UserAddresses
-          WHERE UserId = @userId
-          ORDER BY AddressId DESC
-        )
-      `);
+    await pool.query(
+      'UPDATE UserAddresses SET IsDefault = 1 WHERE UserId = ? ORDER BY AddressId DESC LIMIT 1',
+      [uid]
+    );
   }
 
   return { deleted: true };

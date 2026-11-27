@@ -247,7 +247,7 @@ export function App() {
   const [heroSlide, setHeroSlide] = useState(0);
   const { theme, toggleWithDroplet } = useThemeDroplet();
 
-  // Dữ liệu đồng bộ trực tiếp từ SQL Server (QLThuCung)
+  // Dữ liệu đồng bộ trực tiếp từ MySQL (QLThuCung)
   const [products, setProducts] = useState<ProductItem[]>(CATALOG_PRODUCTS);
   const [spaPackages, setSpaPackages] = useState<SpaPackage[]>(SPA_PACKAGES);
   const [storeSettings, setStoreSettings] = useState<StoreSettings>(INITIAL_STORE_SETTINGS);
@@ -370,7 +370,7 @@ export function App() {
     }, 3200);
   }, []);
 
-  // Tải toàn bộ dữ liệu thật từ SQL Server ngay khi mở ứng dụng
+  // Tải toàn bộ dữ liệu thật từ MySQL ngay khi mở ứng dụng
   const syncBackendData = useCallback(async () => {
     const [prodRes, pkgRes, ordRes, bkRes, gwRes] = await Promise.allSettled([
       petsFriendApi.getProducts(),
@@ -515,7 +515,7 @@ export function App() {
     return () => window.removeEventListener('hashchange', syncHash);
   }, [authRole, triggerToast]);
 
-  // ==================== ADMIN OPERATIONS (SQL SERVER) ====================
+  // ==================== ADMIN OPERATIONS (MYSQL) ====================
   const handleSaveAdminProduct = async (item: ProductItem, isNew: boolean) => {
     try {
       const saved = isNew
@@ -527,7 +527,7 @@ export function App() {
       );
       triggerToast(
         isNew
-          ? `Đã lưu sản phẩm "${saved.name}" vào SQL Server.`
+          ? `Đã lưu sản phẩm "${saved.name}" vào MySQL.`
           : `Đã cập nhật sản phẩm "${saved.name}".`
       );
     } catch (err) {
@@ -612,7 +612,7 @@ export function App() {
     entry: LookupOrderEntry,
     soldItems: Array<{ id: string; quantity: number }>
   ) => {
-    // Cập nhật tức thời giao diện thu ngân & trừ tồn kho, đồng thời ghi xuống SQL Server
+    // Cập nhật tức thời giao diện thu ngân & trừ tồn kho, đồng thời ghi xuống MySQL
     setLookupEntries((prev) => [entry, ...prev]);
     setProducts((prev) =>
       prev.map((p) => {
@@ -650,11 +650,11 @@ export function App() {
         );
       })
       .catch((err) => {
-        triggerToast(getApiErrorMessage(err, 'Lỗi lưu hóa đơn POS xuống SQL Server.'));
+        triggerToast(getApiErrorMessage(err, 'Lỗi lưu hóa đơn POS xuống MySQL.'));
       });
   };
 
-  // ==================== AUTH & ACCOUNT OPERATIONS (SQL SERVER) ====================
+  // ==================== AUTH & ACCOUNT OPERATIONS (MYSQL) ====================
   const saveAuthSession = (user: AuthUserDto) => {
     if (typeof window !== 'undefined') {
       window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(user));
@@ -805,7 +805,7 @@ export function App() {
     try {
       const res = await petsFriendApi.updateProfile(currentUserId, { name, email, phone });
       saveAuthSession(res.user);
-      triggerToast('Đã lưu thông tin hồ sơ vào SQL Server.');
+      triggerToast('Đã lưu thông tin hồ sơ vào MySQL.');
     } catch (err) {
       triggerToast(getApiErrorMessage(err, 'Không thể cập nhật hồ sơ.'));
     }
@@ -864,7 +864,7 @@ export function App() {
     }
   };
 
-  // ==================== STOREFRONT OPERATIONS (SQL SERVER) ====================
+  // ==================== STOREFRONT OPERATIONS (MYSQL) ====================
   const activePaymentOptions = useMemo(() => {
     const enabled = PAYMENT_OPTIONS.filter((opt) => {
       if (opt.id === 'vnpay') return paymentGateways.vnpayEnabled;
@@ -1161,7 +1161,7 @@ export function App() {
       }
       setLookupEntries((prev) => [createdOrder, ...prev]);
 
-      // Cập nhật lại tồn kho mới nhất từ SQL Server
+      // Cập nhật lại tồn kho mới nhất từ MySQL
       const refreshedProducts = await petsFriendApi.getProducts();
       setProducts(refreshedProducts);
 
@@ -1456,11 +1456,11 @@ export function App() {
                     momoAccessKey: saved.momoAccessKey || next.momoAccessKey,
                     momoSecretKey: saved.momoSecretKey || next.momoSecretKey,
                   }));
-                  triggerToast('Đã lưu cấu hình các cổng thanh toán vào SQL Server.');
+                  triggerToast('Đã lưu cấu hình các cổng thanh toán vào MySQL.');
                 })
                 .catch((err) => {
                   triggerToast(
-                    getApiErrorMessage(err, 'Đã cập nhật tạm thời (chưa lưu được lên SQL Server).')
+                    getApiErrorMessage(err, 'Đã cập nhật tạm thời (chưa lưu được lên MySQL).')
                   );
                 });
             }}
@@ -2871,7 +2871,7 @@ export function App() {
           )}
 
           {/* ===================================================================
-           * 4. CART & CHECKOUT PAGE (Guest & Member Checkout -> SQL Server)
+           * 4. CART & CHECKOUT PAGE (Guest & Member Checkout -> MySQL)
            * =================================================================== */}
           {currentPage === 'cart' && (
             <motion.div
@@ -3732,7 +3732,7 @@ export function App() {
           )}
 
           {/* ===================================================================
-           * 5. SERVICE BOOKING PAGE (Synced with SQL Server SpaPackages & Bookings)
+           * 5. SERVICE BOOKING PAGE (Synced with MySQL SpaPackages & Bookings)
            * =================================================================== */}
           {currentPage === 'service' && (
             <motion.div
@@ -3987,7 +3987,7 @@ export function App() {
           )}
 
           {/* ===================================================================
-           * 5B. CONTACT PAGE (Synced with SQL Server ContactMessages)
+           * 5B. CONTACT PAGE (Synced with MySQL ContactMessages)
            * =================================================================== */}
           {currentPage === 'contact' && (
             <motion.div
@@ -4197,7 +4197,7 @@ export function App() {
           )}
 
           {/* ===================================================================
-           * 6. LOGIN & REGISTER PAGES (Synced with SQL Server Users)
+           * 6. LOGIN & REGISTER PAGES (Synced with MySQL Users)
            * =================================================================== */}
           {(currentPage === 'login' || currentPage === 'register') && (
             <motion.div
@@ -4653,7 +4653,7 @@ export function App() {
       {/* Confirmation Dialog */}
       <ConfirmDialog dialog={confirmDialog} onClose={() => setConfirmDialog(null)} />
 
-      {/* Guest Order Lookup Modal (Queries SQL Server /api/orders/lookup) */}
+      {/* Guest Order Lookup Modal (Queries MySQL /api/orders/lookup) */}
       <AnimatePresence>
       {lookupOpen && (
         <motion.div
